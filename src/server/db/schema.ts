@@ -108,6 +108,18 @@ export const postsTagsRelations = relations(postsTags, ({ one }) => ({
   }),
 }));
 
+// Message Chunks table (for AppSync Events chunking)
+// Not exposed to client, used internally by Lambda handler
+export const messageChunks = pgTable('message_chunks', {
+  messageId: varchar('message_id', { length: 255 }).notNull(),
+  chunkIndex: integer('chunk_index').notNull(),
+  totalChunks: integer('total_chunks').notNull(),
+  chunkData: text('chunk_data').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  pk: uniqueIndex('message_chunks_pk').on(table.messageId, table.chunkIndex),
+}));
+
 // Export types
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -117,3 +129,5 @@ export type Comment = typeof comments.$inferSelect;
 export type NewComment = typeof comments.$inferInsert;
 export type Tag = typeof tags.$inferSelect;
 export type NewTag = typeof tags.$inferInsert;
+export type MessageChunk = typeof messageChunks.$inferSelect;
+export type NewMessageChunk = typeof messageChunks.$inferInsert;

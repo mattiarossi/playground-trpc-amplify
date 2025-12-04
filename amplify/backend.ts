@@ -39,7 +39,6 @@ export const lambdaPGStatement1 = new iam.PolicyStatement({
   effect: iam.Effect.ALLOW,
 });
 
-
 // Create AppSync Events API with custom Events construct
 const eventsApi = new Events(backend.stack, 'BlogTRPCEvents', {
   userPool: backend.auth.resources.userPool,
@@ -77,10 +76,9 @@ backend.eventsHandler.resources.lambda.addToRolePolicy(
       'appsync:EventConnect',
       'appsync:EventSubscribe',
       'appsync:EventPublish',
-    'ec2:CreateNetworkInterface',
-    'ec2:DescribeNetworkInterfaces',
-    'ec2:DeleteNetworkInterface',
-
+      'ec2:CreateNetworkInterface',
+      'ec2:DescribeNetworkInterfaces',
+      'ec2:DeleteNetworkInterface',
     ],
     resources: [`${eventsApi.apiArn}/*`, `${eventsApi.apiArn}`],
   })

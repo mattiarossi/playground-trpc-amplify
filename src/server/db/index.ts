@@ -13,3 +13,6 @@ const client = postgres(process.env.DATABASE_URL);
 export const db = drizzle(client, { schema });
 
 export type Database = typeof db;
+
+// Re-export drizzle-orm utilities to ensure consistent versions
+export { eq, and, or, desc, asc, sql, like, isNull } from 'drizzle-orm';

@@ -4,6 +4,11 @@ import { posts, postsTags, tags, users } from '../../db/schema';
 import { eq, desc, like, and, sql } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 import { getUserDisplayName } from '../../utils/haiku-name';
+import { EventEmitter } from 'events';
+import { observable } from '@trpc/server/observable';
+
+// Event emitter for real-time post updates
+const postEvents = new EventEmitter();
 
 export const postsRouter = createTRPCRouter({
   // Get all posts with pagination
@@ -226,6 +231,31 @@ export const postsRouter = createTRPCRouter({
         );
       }
 
+      // Fetch complete post with relations for event emission
+      const completePost = await ctx.db.query.posts.findFirst({
+        where: eq(posts.id, newPost.id),
+        with: {
+          author: {
+            columns: {
+              id: true,
+              name: true,
+              email: true,
+              avatarUrl: true,
+            },
+          },
+          postsTags: {
+            with: {
+              tag: true,
+            },
+          },
+        },
+      });
+
+      // Emit event for real-time updates
+      if (completePost) {
+        postEvents.emit('newPost', completePost);
+      }
+
       return newPost;
     }),
 
@@ -275,6 +305,31 @@ export const postsRouter = createTRPCRouter({
         }
       }
 
+      // Fetch complete post with relations for event emission
+      const completePost = await ctx.db.query.posts.findFirst({
+        where: eq(posts.id, updatedPost.id),
+        with: {
+          author: {
+            columns: {
+              id: true,
+              name: true,
+              email: true,
+              avatarUrl: true,
+            },
+          },
+          postsTags: {
+            with: {
+              tag: true,
+            },
+          },
+        },
+      });
+
+      // Emit event for real-time updates
+      if (completePost) {
+        postEvents.emit('updatePost', completePost);
+      }
+
       return updatedPost;
     }),
 
@@ -294,6 +349,60 @@ export const postsRouter = createTRPCRouter({
         });
       }
 
+      // Emit event for real-time updates
+      postEvents.emit('deletePost', deletedPost);
+
       return deletedPost;
     }),
+
+  // Subscribe to new posts
+  onNewPost: publicProcedure.subscription(() => {
+    return observable<any>((emit) => {
+      const onPost = (post: any) => {
+        emit.next(post);
+      };
+
+      // Listen for new posts
+      postEvents.on('newPost', onPost);
+
+      // Cleanup
+      return () => {
+        postEvents.off('newPost', onPost);
+      };
+    });
+  }),
+
+  // Subscribe to post updates
+  onUpdatePost: publicProcedure.subscription(() => {
+    return observable<any>((emit) => {
+      const onUpdate = (post: any) => {
+        emit.next(post);
+      };
+
+      // Listen for post updates
+      postEvents.on('updatePost', onUpdate);
+
+      // Cleanup
+      return () => {
+        postEvents.off('updatePost', onUpdate);
+      };
+    });
+  }),
+
+  // Subscribe to post deletions
+  onDeletePost: publicProcedure.subscription(() => {
+    return observable<any>((emit) => {
+      const onDelete = (post: any) => {
+        emit.next(post);
+      };
+
+      // Listen for post deletions
+      postEvents.on('deletePost', onDelete);
+
+      // Cleanup
+      return () => {
+        postEvents.off('deletePost', onDelete);
+      };
+    });
+  }),
 });

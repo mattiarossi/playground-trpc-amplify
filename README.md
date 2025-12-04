@@ -55,7 +55,7 @@ A modern full-stack blog platform built with Next.js, tRPC, Drizzle ORM, Postgre
 - 🔍 **Search**: Search posts by title and content
 - 📊 **View Counts**: Track post popularity
 - 🎨 **Modern UI**: Responsive design with Tailwind CSS
-- ⚡ **Real-time Ready**: WebSocket infrastructure for future real-time features
+- ⚡ **WebSocket Communication**: Persistent WebSocket connections via AppSync Events for efficient client-server communication
 - 🔒 **Type Safety**: Full TypeScript coverage from database to UI
 
 ## Database Schema
@@ -282,24 +282,16 @@ git push origin main
 npm run amplify:deploy
 ```
 
-### Next.js Frontend
-
-Deploy to Vercel:
-
-```bash
-# Connect your repo to Vercel
-vercel
-```
-
 Make sure to:
-1. Set `DATABASE_URL` environment variable
-2. Use `amplify_outputs.json` from deployed backend
-3. Set `NEXT_PUBLIC_APPSYNC_EVENTS_ENDPOINT` if needed
+1. Set `DATABASE_URL` environment variable in Lambda
+2. Ensure `amplify_outputs.json` is generated with correct AppSync Events endpoint
+3. Configure any additional environment variables as needed
 
 ## Future Enhancements
 
-- [ ] User authentication with AWS Cognito
-- [ ] Real-time subscriptions for live comments
+- [x] User authentication with AWS Cognito (implemented)
+- [x] Efficient data fetching with React Query polling (implemented)
+- [ ] Real-time subscriptions for live updates (WebSocket infrastructure ready)
 - [ ] Post drafts and scheduled publishing
 - [ ] Rich text editor (TipTap or similar)
 - [ ] Image uploads to S3

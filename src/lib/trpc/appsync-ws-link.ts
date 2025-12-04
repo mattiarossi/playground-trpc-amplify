@@ -2,10 +2,18 @@ import type { TRPCLink } from '@trpc/client';
 import { observable } from '@trpc/server/observable';
 import { TRPCClientError } from '@trpc/client';
 import type { AnyRouter } from '@trpc/server';
+import {
+  ChunkStore,
+  needsChunking,
+  chunkMessage,
+  type ChunkedMessage,
+  type MessagePayload,
+} from './chunking-utils';
 
 /**
- * Custom WebSocket tRPC link for AppSync Events API
+ * Custom WebSocket tRPC link for AppSync Events API with automatic message chunking
  * This adapter bridges tRPC over AppSync Events WebSocket instead of HTTP
+ * Handles AppSync's 240KB message size limit transparently via chunking
  */
 export interface WebSocketLinkOptions {
   url: string;
@@ -21,11 +29,26 @@ export interface WebSocketLinkOptions {
 interface PendingRequest {
   resolve: (data: any) => void;
   reject: (error: any) => void;
+  observer?: any; // For subscriptions
+  isSubscription?: boolean;
+  path?: string; // Subscription path for filtering
+  input?: any; // Subscription input for filtering
+}
+
+interface ChunkFetchRequest {
+  messageId: string;
+  totalChunks: number;
+  requestId: string;
+  chunks: Map<number, ChunkedMessage>;
+  resolve: (data: any) => void;
+  reject: (error: any) => void;
+  timeout: NodeJS.Timeout;
 }
 
 export class AppSyncWebSocketLink {
   private ws: WebSocket | null = null;
   private pendingRequests = new Map<string, PendingRequest>();
+  private pendingChunkFetches = new Map<string, ChunkFetchRequest>(); // Track chunk fetches
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private isConnecting = false;
   private isConnected = false;
@@ -36,6 +59,8 @@ export class AppSyncWebSocketLink {
   private connectionTimeoutMs = 300000; // 5 minutes default
   private subscriptionId: string | null = null; // Track subscription ID per connection
   private subscriptionCounter = 0; // Counter for unique subscription IDs
+  private chunkStore = new ChunkStore(); // Store for reassembling incoming chunks
+  private currentAuthHeader: Record<string, string> = {}; // Store current auth header
 
   constructor(private options: WebSocketLinkOptions) {}
 
@@ -100,6 +125,9 @@ export class AppSyncWebSocketLink {
           }
         }
 
+        // Store auth header for later use
+        this.currentAuthHeader = authHeader;
+        
         // Encode authorization as base64URL
         const encodedAuth = this.getBase64URLEncoded(authHeader);
         
@@ -167,6 +195,59 @@ export class AppSyncWebSocketLink {
               const eventData = JSON.parse(response.event);
               console.log('AppSync event data:', eventData);
               
+              // Check if this is a chunk response
+              if (eventData.isChunked && eventData.messageId && eventData.chunkIndex !== undefined) {
+                this.handleIncomingChunk(eventData as ChunkedMessage);
+                return;
+              }
+              
+              // Check if this is a chunked response from server
+              if (eventData.isChunkedResponse) {
+                console.log('Received chunked response metadata', {
+                  messageId: eventData.messageId,
+                  totalChunks: eventData.totalChunks,
+                  hasFirstChunk: !!eventData.firstChunk,
+                });
+                
+                // Start fetching chunks (if first chunk provided, process it first)
+                this.startFetchingChunks(
+                  eventData.messageId,
+                  eventData.totalChunks,
+                  eventData.requestId,
+                  eventData.firstChunk
+                );
+                return;
+              }
+              
+              // Check if this is a subscription event broadcast
+              if (eventData.subscriptionPath) {
+                // This is a broadcasted subscription event
+                // Find all matching subscriptions and emit to them
+                for (const [reqId, request] of this.pendingRequests.entries()) {
+                  if (request.isSubscription && 
+                      request.path === eventData.subscriptionPath &&
+                      request.observer) {
+                    
+                    // Check if subscription input matches (for filtering)
+                    const inputMatches = this.subscriptionInputMatches(
+                      request.input,
+                      eventData.subscriptionInput
+                    );
+                    
+                    if (inputMatches && eventData.result) {
+                      const serializedData = eventData.result.data;
+                      const data = this.options.transformer 
+                        ? this.options.transformer.deserialize(serializedData)
+                        : serializedData;
+                      
+                      console.log('Emitting subscription data:', { path: eventData.subscriptionPath, data });
+                      request.observer.next({ result: { type: 'data' as const, data } });
+                    }
+                  }
+                }
+                return;
+              }
+              
               if (eventData.id && this.pendingRequests.has(eventData.id)) {
                 const request = this.pendingRequests.get(eventData.id)!;
                 
@@ -176,6 +257,7 @@ export class AppSyncWebSocketLink {
                       cause: eventData.error,
                     })
                   );
+                  this.pendingRequests.delete(eventData.id);
                 } else if (eventData.result) {
                   // Response has result.data structure
                   // Deserialize using superjson if transformer is configured
@@ -185,15 +267,23 @@ export class AppSyncWebSocketLink {
                     ? this.options.transformer.deserialize(serializedData)
                     : serializedData;
                   console.log('Deserialized data:', data);
-                  request.resolve(data);
+                  
+                  // For subscriptions, this is the acknowledgment
+                  if (request.isSubscription) {
+                    // Just acknowledge, don't emit data yet
+                    request.resolve(data);
+                    // Keep subscription in pendingRequests for future events
+                  } else {
+                    // For queries/mutations, resolve and complete
+                    request.resolve(data);
+                    this.pendingRequests.delete(eventData.id);
+                  }
                 } else {
                   // This might be the original request being echoed back, not the response
                   // Don't resolve or reject yet - wait for actual response
                   console.log('Event data has no result, skipping:', eventData);
                   return;
                 }
-                
-                this.pendingRequests.delete(eventData.id);
               }
               return;
             }
@@ -259,10 +349,201 @@ export class AppSyncWebSocketLink {
     this.ws?.send(JSON.stringify(subscribeMessage));
   }
 
+  /**
+   * Start fetching chunks from the server
+   */
+  private startFetchingChunks(
+    messageId: string,
+    totalChunks: number,
+    requestId: string,
+    firstChunk?: ChunkedMessage
+  ): void {
+    // Get the pending request
+    const pendingRequest = this.pendingRequests.get(requestId);
+    if (!pendingRequest) {
+      console.error('No pending request found for chunked response:', requestId);
+      return;
+    }
+    
+    // Create a chunk fetch request
+    const timeout = setTimeout(() => {
+      const chunkFetch = this.pendingChunkFetches.get(messageId);
+      if (chunkFetch) {
+        chunkFetch.reject(new Error('Timeout fetching chunks'));
+        this.pendingChunkFetches.delete(messageId);
+      }
+    }, 30000); // 30 second timeout
+    
+    const chunks = new Map<number, ChunkedMessage>();
+    
+    // If first chunk provided, add it
+    if (firstChunk) {
+      chunks.set(firstChunk.chunkIndex, firstChunk);
+      console.log(`Added first chunk ${firstChunk.chunkIndex}`);
+    }
+    
+    this.pendingChunkFetches.set(messageId, {
+      messageId,
+      totalChunks,
+      requestId,
+      chunks,
+      resolve: pendingRequest.resolve,
+      reject: pendingRequest.reject,
+      timeout,
+    });
+    
+    // Request remaining chunks (skip first if already provided)
+    const startIndex = firstChunk ? 1 : 0;
+    for (let i = startIndex; i < totalChunks; i++) {
+      const chunkRequest = {
+        type: 'chunk_req',
+        mid: messageId,
+        idx: i,
+      };
+      
+      const publishMessage = {
+        type: 'publish',
+        id: `pub-${Math.random().toString(36).substring(7)}`,
+        channel: this.channelName,
+        events: [JSON.stringify(chunkRequest)],
+        authorization: this.currentAuthHeader,
+      };
+      
+      this.ws?.send(JSON.stringify(publishMessage));
+    }
+    
+    // If we only have one chunk and it's already provided, process immediately
+    if (totalChunks === 1 && firstChunk) {
+      this.handleIncomingChunk(firstChunk);
+    }
+  }
+
+  /**
+   * Handle an incoming chunk
+   */
+  private handleIncomingChunk(chunk: ChunkedMessage): void {
+    const chunkFetch = this.pendingChunkFetches.get(chunk.messageId);
+    if (!chunkFetch) {
+      console.warn('Received chunk for unknown message:', chunk.messageId);
+      return;
+    }
+    
+    // Store the chunk
+    chunkFetch.chunks.set(chunk.chunkIndex, chunk);
+    
+    console.log(`Received chunk ${chunk.chunkIndex + 1}/${chunk.totalChunks} for message ${chunk.messageId}`);
+    
+    // Check if we have all chunks
+    if (chunkFetch.chunks.size === chunkFetch.totalChunks) {
+      console.log('All chunks received, reassembling message');
+      
+      // Clear timeout
+      clearTimeout(chunkFetch.timeout);
+      
+      // Convert map to array
+      const chunks: ChunkedMessage[] = [];
+      for (let i = 0; i < chunkFetch.totalChunks; i++) {
+        const chunkItem = chunkFetch.chunks.get(i);
+        if (!chunkItem) {
+          chunkFetch.reject(new Error(`Missing chunk ${i}`));
+          this.pendingChunkFetches.delete(chunkFetch.messageId);
+          this.pendingRequests.delete(chunkFetch.requestId);
+          return;
+        }
+        chunks.push(chunkItem);
+      }
+      
+      // Reassemble the message
+      try {
+        const { reassembleChunks } = require('./chunking-utils');
+        const completeMessage = reassembleChunks(chunks);
+        
+        if (completeMessage.error) {
+          chunkFetch.reject(
+            new TRPCClientError(completeMessage.error.message, {
+              cause: completeMessage.error,
+            })
+          );
+        } else if (completeMessage.result) {
+          const serializedData = completeMessage.result.data;
+          const data = this.options.transformer
+            ? this.options.transformer.deserialize(serializedData)
+            : serializedData;
+          chunkFetch.resolve(data);
+        }
+      } catch (error) {
+        chunkFetch.reject(error);
+      } finally {
+        // Cleanup
+        this.pendingChunkFetches.delete(chunk.messageId);
+        this.pendingRequests.delete(chunkFetch.requestId);
+      }
+    }
+  }
+
+  /**
+   * Handle incoming chunked response
+   */
+  /**
+   * Check if subscription input matches for filtering events
+   */
+  private subscriptionInputMatches(requestInput: any, eventInput: any): boolean {
+    // Simple deep equality check for subscription input
+    // This ensures clients only receive events they subscribed to
+    if (!requestInput && !eventInput) return true;
+    if (!requestInput || !eventInput) return false;
+    
+    try {
+      return JSON.stringify(requestInput) === JSON.stringify(eventInput);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Handle incoming chunked response
+   */
+  private handleChunkedResponse(chunk: ChunkedMessage): void {
+    console.log('Received chunk:', {
+      messageId: chunk.messageId,
+      chunkIndex: chunk.chunkIndex,
+      totalChunks: chunk.totalChunks,
+    });
+    
+    // Add chunk to store and check if message is complete
+    const completeMessage = this.chunkStore.addChunk(chunk);
+    
+    if (completeMessage) {
+      console.log('Message reassembled:', completeMessage);
+      
+      // Process the complete message
+      if (completeMessage.id && this.pendingRequests.has(completeMessage.id)) {
+        const request = this.pendingRequests.get(completeMessage.id)!;
+        
+        if (completeMessage.error) {
+          request.reject(
+            new TRPCClientError(completeMessage.error.message, {
+              cause: completeMessage.error,
+            })
+          );
+        } else if (completeMessage.result) {
+          const serializedData = completeMessage.result.data;
+          const data = this.options.transformer
+            ? this.options.transformer.deserialize(serializedData)
+            : serializedData;
+          request.resolve(data);
+        }
+        
+        this.pendingRequests.delete(completeMessage.id);
+      }
+    }
+  }
+
   public async request(operation: {
     type: 'query' | 'mutation' | 'subscription';
     path: string;
     input: any;
+    observer?: any; // For subscriptions
   }): Promise<any> {
     const ws = await this.connect();
 
@@ -295,23 +576,53 @@ export class AppSyncWebSocketLink {
         input: serializedInput,
         context: this.options.connectionParams,
       };
+
+      this.pendingRequests.set(id, { 
+        resolve, 
+        reject, 
+        observer: operation.observer,
+        isSubscription: operation.type === 'subscription',
+        path: operation.path,
+        input: operation.input,
+      });
       
-      // Wrap tRPC request in AppSync Events publish message
-      const publishMessage = {
-        type: 'publish',
-        id: `pub-${Math.random().toString(36).substring(7)}`,
-        channel: this.channelName,
-        events: [JSON.stringify(eventPayload)],
-        authorization: authHeader,
-      };
-
-      this.pendingRequests.set(id, { resolve, reject });
-
-      if (ws.readyState === WebSocket.OPEN && this.isSubscribed) {
-        ws.send(JSON.stringify(publishMessage));
+      // Check if message needs chunking
+      if (needsChunking(eventPayload)) {
+        console.log('Message needs chunking, splitting into chunks...');
+        const chunks = chunkMessage(eventPayload);
+        console.log(`Split into ${chunks.length} chunks`);
+        
+        // Send each chunk as a separate message
+        for (const chunk of chunks) {
+          const publishMessage = {
+            type: 'publish',
+            id: `pub-${Math.random().toString(36).substring(7)}`,
+            channel: this.channelName,
+            events: [JSON.stringify(chunk)],
+            authorization: this.currentAuthHeader,
+          };
+          
+          if (ws.readyState === WebSocket.OPEN && this.isSubscribed) {
+            ws.send(JSON.stringify(publishMessage));
+          } else {
+            this.messageQueue.push(publishMessage);
+          }
+        }
       } else {
-        // Queue message if not connected or not subscribed yet
-        this.messageQueue.push(publishMessage);
+        // Send as normal single message
+        const publishMessage = {
+          type: 'publish',
+          id: `pub-${Math.random().toString(36).substring(7)}`,
+          channel: this.channelName,
+          events: [JSON.stringify(eventPayload)],
+          authorization: this.currentAuthHeader,
+        };
+        
+        if (ws.readyState === WebSocket.OPEN && this.isSubscribed) {
+          ws.send(JSON.stringify(publishMessage));
+        } else {
+          this.messageQueue.push(publishMessage);
+        }
       }
 
       // Set timeout for request
@@ -331,6 +642,9 @@ export class AppSyncWebSocketLink {
     if (this.keepAliveTimeout) {
       clearTimeout(this.keepAliveTimeout);
     }
+    
+    // Clear chunk store
+    this.chunkStore.clear();
     
     // Unsubscribe before closing if we have an active subscription
     if (this.ws?.readyState === WebSocket.OPEN && this.subscriptionId) {
@@ -362,20 +676,46 @@ export function createAppSyncWebSocketLink<TRouter extends AnyRouter>(
       return observable((observer) => {
         const { type, path, input } = op;
 
-        wsLink
-          .request({
-            type: type as 'query' | 'mutation' | 'subscription',
-            path,
-            input,
-          })
-          .then((data) => {
-            const result = { result: { type: 'data' as const, data } };
-            observer.next(result);
-            observer.complete();
-          })
-          .catch((error) => {
-            observer.error(error);
-          });
+        if (type === 'subscription') {
+          // For subscriptions, pass the observer and don't complete
+          wsLink
+            .request({
+              type: 'subscription',
+              path,
+              input,
+              observer,
+            })
+            .then((data) => {
+              // Initial subscription confirmation
+              console.log('Subscription started:', data);
+              // Don't complete - let the subscription stay open
+            })
+            .catch((error) => {
+              observer.error(error);
+            });
+          
+          // Return cleanup function
+          return () => {
+            console.log('Subscription cleanup');
+            // Could send unsubscribe message here
+          };
+        } else {
+          // For queries and mutations, complete after response
+          wsLink
+            .request({
+              type: type as 'query' | 'mutation' | 'subscription',
+              path,
+              input,
+            })
+            .then((data) => {
+              const result = { result: { type: 'data' as const, data } };
+              observer.next(result);
+              observer.complete();
+            })
+            .catch((error) => {
+              observer.error(error);
+            });
+        }
       });
     };
   };

@@ -14,10 +14,19 @@ export function CommentSection({ postId }: CommentSectionProps) {
 
   const utils = trpc.useUtils();
   
-  const { data: comments, isLoading } = trpc.comments.byPostId.useQuery({
-    postId,
-    includeReplies: true,
-  });
+  const { data: comments, isLoading } = trpc.comments.byPostId.useQuery(
+    {
+      postId,
+      includeReplies: true,
+    },
+    {
+      // Refetch when window regains focus (user switches back to tab)
+      refetchOnWindowFocus: true,
+      // Refetch every 10 seconds while page is active
+      refetchInterval: 10000,
+      refetchIntervalInBackground: false,
+    }
+  );
 
   const createComment = trpc.comments.create.useMutation({
     onSuccess: () => {

@@ -9,7 +9,16 @@ export default function PostPage() {
   const params = useParams();
   const slug = params.slug as string;
 
-  const { data: post, isLoading, error } = trpc.posts.bySlug.useQuery({ slug });
+  const { data: post, isLoading, error } = trpc.posts.bySlug.useQuery(
+    { slug },
+    {
+      // Refetch when window regains focus
+      refetchOnWindowFocus: true,
+      // Refetch every 15 seconds
+      refetchInterval: 15000,
+      refetchIntervalInBackground: false,
+    }
+  );
 
   // Debug logging
   console.log('Post data:', post);

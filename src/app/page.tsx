@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
 
 export default function HomePage() {
-  const { data, isLoading, error, fetchNextPage, hasNextPage } = 
+  const { data, isLoading, error, fetchNextPage, hasNextPage} = 
     trpc.posts.list.useInfiniteQuery(
       { limit: 10 },
       {
@@ -15,6 +15,11 @@ export default function HomePage() {
           const pageData = (lastPage as any)?.data || lastPage;
           return pageData?.nextCursor;
         },
+        // Refetch when window regains focus
+        refetchOnWindowFocus: true,
+        // Refetch every 15 seconds while active
+        refetchInterval: 15000,
+        refetchIntervalInBackground: false,
       }
     );
 

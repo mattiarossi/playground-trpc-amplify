@@ -240,25 +240,16 @@ Visit [http://localhost:3000](http://localhost:3000)
 
 ## Step 10: Deploy Frontend
 
-### Option A: Vercel (Recommended)
+### Amplify Hosting
 
-```bash
-npm install -g vercel
-vercel
-```
+The frontend is automatically deployed with the backend when using Amplify CI/CD (configured in Step 6).
 
-Configure environment variables in Vercel dashboard.
-
-### Option B: Amplify Hosting
-
-Already deployed with backend if using Amplify CI/CD.
-
-### Option C: Other Platforms
-
+Alternatively, you can deploy to other platforms:
 - Netlify
-- AWS Amplify Hosting
 - Cloudflare Pages
 - Your own server
+
+Make sure to configure environment variables properly on your chosen platform.
 
 ## Verification Checklist
 

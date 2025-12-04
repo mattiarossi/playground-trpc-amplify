@@ -5,15 +5,15 @@
 ```mermaid
 graph TB
     subgraph Client["CLIENT (Browser)"]
-        NextJS["Next.js 15 App (React 19)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• App Router (SSR + Client Components)<br/>• TailwindCSS for styling<br/>• tRPC React Query hooks<br/>• AWS Amplify client (auth + config)"]
+        NextJS["Next.js 15 App (React 19)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• App Router (SSR + Client Components)<br/>• TailwindCSS for styling<br/>• tRPC React Query hooks (with polling)<br/>• AWS Amplify client (auth + config)<br/>• WebSocket connection for transport"]
     end
     
     subgraph Backend["AWS AMPLIFY GEN2 BACKEND"]
         Cognito["AWS Cognito (Authentication)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• User Pool for authentication<br/>• Email + Password login<br/>• JWT token generation"]
         
-        AppSync["AWS AppSync Events (WebSocket Layer)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• Event-driven pub/sub<br/>• WebSocket connection management<br/>• Real-time event distribution<br/>• Custom tRPC event channel"]
+        AppSync["AWS AppSync Events (WebSocket Layer)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• Event-driven pub/sub<br/>• WebSocket connection management<br/>• Real-time event distribution<br/>• Custom tRPC event channel<br/>• 240KB message size limit"]
         
-        Lambda["AWS Lambda (tRPC Handler Function)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• Processes tRPC requests<br/>• Routes to appropriate procedures<br/>• Validates authentication<br/>• Executes business logic"]
+        Lambda["AWS Lambda (tRPC Handler Function)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• Processes tRPC requests<br/>• Routes to appropriate procedures<br/>• Validates authentication<br/>• Executes business logic<br/>• Handles message chunking"]
         
         Cognito --> AppSync
         AppSync --> Lambda
@@ -109,24 +109,52 @@ sequenceDiagram
     Hook->>UI: Updates Automatically
 ```
 
-### 4. WebSocket Flow (Prepared for Real-time)
+### 4. WebSocket Flow (tRPC over AppSync Events)
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant WS as AppSync Events WebSocket
-    participant Lambda
-    participant Handler as tRPC Subscription Handler
+    participant Lambda as tRPC Lambda Handler
+    participant DB as PostgreSQL
     participant UI as React Component
     
-    Client->>WS: Connect<br/>wss://[endpoint]/realtime<br/>+ Authorization header
+    Client->>WS: Connect<br/>wss://[endpoint]/event<br/>+ Authorization header
     Client->>WS: Subscribe to tRPC channel
     Note over WS: Maintained Connection
-    Note over Lambda: On server event
-    Lambda->>WS: Publish event
-    WS->>Client: Broadcast to all subscribed clients
-    Client->>Handler: Process event
-    Handler->>UI: Update component
+    
+    alt Small Message (<230KB)
+        Client->>WS: Publish tRPC request
+        WS->>Lambda: Forward request
+        Lambda->>DB: Query/Mutation
+        DB->>Lambda: Result
+        Lambda->>WS: Response
+        WS->>Client: Broadcast response
+        Client->>UI: Update component
+    else Large Message (>230KB)
+        Note over Client: Split into 200KB chunks
+        Client->>WS: Publish chunk 1
+        Client->>WS: Publish chunk 2
+        Client->>WS: Publish chunk N
+        WS->>Lambda: Forward chunks
+        Lambda->>DB: Store chunks in PostgreSQL message_chunks table
+        Note over Lambda: Wait for all chunks
+        Lambda->>DB: Retrieve all chunks via Drizzle ORM
+        Lambda->>Lambda: Reassemble message
+        Lambda->>DB: Process tRPC request
+        DB->>Lambda: Result
+        alt Large Response (>230KB)
+            Note over Lambda: Split response into chunks
+            Lambda->>WS: Response with all chunks
+            WS->>Client: Broadcast chunked response
+            Note over Client: Reassemble from chunks
+        else Small Response
+            Lambda->>WS: Response
+            WS->>Client: Broadcast response
+        end
+        Lambda->>DB: Cleanup chunks from message_chunks table
+        Client->>UI: Update component
+    end
 ```
 
 ## Type Safety Flow
@@ -140,7 +168,9 @@ flowchart TD
     E -->|Full autocomplete & type checking<br/>No manual type definitions needed| F[Type-Safe Application]
 ```
 
-## Data Model (Drizzle Schema)
+## Data Model
+
+### Application Schema (Drizzle ORM)
 
 ```mermaid
 erDiagram
@@ -184,6 +214,19 @@ erDiagram
     }
 ```
 
+### Message Chunking Schema (PostgreSQL)
+
+```mermaid
+erDiagram
+    MESSAGE_CHUNKS {
+        varchar messageId "Composite Key (Part 1)"
+        int chunkIndex "Composite Key (Part 2)"
+        int totalChunks
+        text chunkData "Base64 encoded"
+        timestamp createdAt
+    }
+```
+
 ## Security Layers
 
 ### 1. Network Security
@@ -195,27 +238,34 @@ erDiagram
 - AWS Cognito JWT tokens
 - Token validation on every request
 - Automatic token refresh
-
-### 3. Authorization
-- tRPC context includes authenticated user
-- Protected procedures check user identity
-- Row-level security in procedures (author checks)
-
-### 4. Input Validation
-- Zod schemas validate all inputs
-- SQL injection prevention via Drizzle parameterization
-- XSS protection in React (automatic escaping)
-
-### 5. Rate Limiting (To Implement)
-- API Gateway throttling
-- Lambda concurrency limits
-- Application-level rate limiting
-
 ## Scalability Considerations
 
 ### Horizontal Scaling
 - **Lambda**: Automatically scales to handle requests
-- **Next.js**: Deploy to multiple regions with Vercel
+- **Next.js**: Can be deployed with AWS Amplify Hosting or other providers
+- **Database**: Add read replicas for queries; chunk storage uses same PostgreSQL instance
+
+### Vertical Scaling
+- **Database**: Upgrade instance size as needed
+- **Lambda**: Increase memory allocation (increases CPU)
+
+### Caching Strategy
+- **React Query**: Client-side caching (5s stale time)
+- **CDN**: Static assets cached at edge
+- **Database**: Add Redis for frequently accessed data
+- **Message Chunks**: Client-side ChunkStore with 1-minute timeout
+
+### Connection Pooling
+- **Drizzle**: Reuse connections in Lambda
+- **PgBouncer**: Pool connections to PostgreSQL
+
+### Message Size Optimization
+- **Chunking**: Transparent 200KB chunking for messages >230KB
+- **DynamoDB Storage**: Temporary chunk storage with TTL cleanup
+- **Base64 Encoding**: Safe transmission with ~33% size overhead
+- **Best Practices**: Use pagination and field selection to minimize payload sizes
+- **Lambda**: Automatically scales to handle requests
+- **Next.js**: Can be deployed with AWS Amplify Hosting or other providers
 - **Database**: Add read replicas for queries
 
 ### Vertical Scaling
@@ -240,49 +290,31 @@ erDiagram
 
 ### Application Metrics
 - Request latency
-- Error rates
-- Database query performance
-
-### User Analytics (Optional)
-- Page views
-- User engagement
-- Conversion tracking
-
 ## Cost Structure
 
 ### Variable Costs (Per Request)
 - Lambda invocations: $0.0000002 per request
 - Lambda duration: $0.0000166667 per GB-second
-- Database queries: Included in database cost
+- Database queries: Included in database cost (includes chunk storage)
+- AppSync Events: $2.40 per million messages + $0.08 per million connection minutes
 
 ### Fixed Costs (Monthly)
-- Database: $15-100 depending on size
-- Amplify hosting: $0 (frontend on Vercel)
-- Cognito: Free tier covers most use cases
+- Database: $15-100 depending on size (includes chunk storage)
+- AWS Amplify Hosting: Free tier available, then ~$0.01/build minute + $0.15/GB stored
+- Cognito: Free tier covers most use cases (50,000 MAUs)
 
 ### Optimization Tips
 - Use database indexes for fast queries
 - Minimize Lambda cold starts
 - Cache frequently accessed data
 - Use Amplify free tier resources
+- **Chunking optimization**: Minimize large payloads to reduce PostgreSQL write/read operations
+- **Pagination**: Use pagination instead of large result sets to avoid chunking overhead
+- **Cleanup job**: Periodic cleanup of old chunks (>1 hour) via scheduled task prevents storage bloat
 
 ## Deployment Environments
 
 ### Development
-- Local Next.js server
-- Amplify sandbox
-- Local or dev database
-
-### Staging
-- Vercel preview deployment
-- Amplify staging branch
-- Staging database
-
-### Production
-- Vercel production
-- Amplify production branch
-- Production database with backups
-
 ## Technology Choices - Rationale
 
 ### Next.js 15
@@ -302,6 +334,79 @@ erDiagram
 - Zero runtime overhead
 - Great migration system
 - SQL-like query builder
+
+### AWS Amplify Gen2
+- Simplified cloud development
+- Infrastructure as code
+- Integrated auth & API
+- Great for startups/MVPs
+
+### PostgreSQL
+- Robust and reliable
+- Rich feature set
+- Great ecosystem
+- Scalable
+
+### AppSync Events API
+- WebSocket-based persistent communication layer
+- Integrated with Cognito authentication
+- Event-driven pub/sub architecture
+- Built-in connection management
+- **Client Strategy**: Uses React Query polling over WebSocket for efficient data fetching
+- **Note**: 240KB message size limit handled via transparent PostgreSQL-based chunking
+
+### PostgreSQL for Chunking
+- Uses existing database infrastructure (no DynamoDB needed)
+- No additional services or costs required
+- Simple `message_chunks` table managed with Drizzle ORM
+- Fast read/write operations with minimal latency (~5-20ms per chunk)
+- Automatic cleanup after processing, with periodic background jobs for orphaned chunks
+
+## Message Chunking System
+
+### Architecture Decision
+To handle AppSync Events API's 240KB message size limit, a transparent chunking system has been implemented:
+
+#### Client-Side (`src/lib/trpc/appsync-ws-link.ts`)
+- Detects messages >230KB before sending
+- Splits into 200KB base64-encoded chunks
+- Sends chunks sequentially via WebSocket
+- Reassembles incoming chunked responses using in-memory `ChunkStore`
+- 1-minute timeout for incomplete messages
+
+#### Server-Side (`amplify/events/handler.ts`)
+- Receives chunks and stores in PostgreSQL `message_chunks` table using Drizzle ORM
+- Waits for all chunks to arrive before processing
+- Reassembles complete message from stored chunks
+- Processes tRPC request normally
+- Chunks large responses if needed (>230KB)
+- Cleans up chunks from PostgreSQL after processing to prevent orphaned data
+
+#### Shared Utilities
+- **Client**: `src/lib/trpc/chunking-utils.ts` (browser-compatible)
+- **Server**: `amplify/events/chunking-utils.ts` (Node.js with Drizzle ORM)
+
+#### Key Features
+- ✅ **Transparent**: No application code changes needed
+- ✅ **Bidirectional**: Works for requests and responses
+- ✅ **Automatic Cleanup**: Periodic cleanup job removes old chunks
+- ✅ **Error Handling**: Cleanup on errors and timeouts
+- ✅ **Zero Overhead**: Small messages (<230KB) sent normally
+- ✅ **Single Database**: Uses same PostgreSQL instance, no additional infrastructure
+
+#### Performance Impact
+- Small messages: Zero overhead
+- Large messages: ~33% size increase (base64) + PostgreSQL insert/query latency (~5-20ms per chunk)
+- Best practice: Use pagination to avoid large payloads
+
+#### Monitoring
+- CloudWatch logs track chunking events
+- PostgreSQL query logs show chunk storage operations
+- Client console logs show chunking activity
+
+See `CHUNKING.md`, `CHUNKING_SUMMARY.md`, and `CHUNKING_QUICKSTART.md` for detailed documentation.
+
+This architecture provides a solid foundation for a production-ready blog platform with room to grow.
 
 ### AWS Amplify Gen2
 - Simplified cloud development

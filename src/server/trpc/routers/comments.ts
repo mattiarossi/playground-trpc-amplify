@@ -4,6 +4,11 @@ import { comments, users } from '../../db/schema';
 import { eq, desc, and, isNull } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 import { getUserDisplayName } from '../../utils/haiku-name';
+import { EventEmitter } from 'events';
+import { observable } from '@trpc/server/observable';
+
+// Event emitter for real-time comment updates
+const commentEvents = new EventEmitter();
 
 export const commentsRouter = createTRPCRouter({
   // Get comments for a post
@@ -62,6 +67,15 @@ export const commentsRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       const { authorId, ...commentData } = input;
 
+      // Log incoming data for debugging
+      console.log('Comment create mutation called:', {
+        inputAuthorId: authorId,
+        hasCtxUser: !!ctx.user,
+        ctxUserSub: ctx.user?.sub,
+        ctxUserUsername: ctx.user?.username,
+        postId: input.postId,
+      });
+
       // Get or create user based on authenticated user
       let finalAuthorId = authorId;
 
@@ -104,6 +118,9 @@ export const commentsRouter = createTRPCRouter({
         });
       }
 
+      // Log final author ID being used
+      console.log('Creating comment with finalAuthorId:', finalAuthorId);
+
       const [newComment] = await ctx.db
         .insert(comments)
         .values({
@@ -125,6 +142,14 @@ export const commentsRouter = createTRPCRouter({
           },
         },
       });
+
+      // Emit event for real-time updates
+      if (commentWithAuthor) {
+        commentEvents.emit('newComment', {
+          postId: commentWithAuthor.postId,
+          comment: commentWithAuthor,
+        });
+      }
 
       return commentWithAuthor;
     }),
@@ -171,5 +196,26 @@ export const commentsRouter = createTRPCRouter({
       }
 
       return deletedComment;
+    }),
+
+  // Subscribe to new comments for a post
+  onNewComment: publicProcedure
+    .input(z.object({ postId: z.number() }))
+    .subscription(({ input }) => {
+      return observable<any>((emit) => {
+        const onComment = (data: { postId: number; comment: any }) => {
+          if (data.postId === input.postId) {
+            emit.next(data.comment);
+          }
+        };
+
+        // Listen for new comments
+        commentEvents.on('newComment', onComment);
+
+        // Cleanup
+        return () => {
+          commentEvents.off('newComment', onComment);
+        };
+      });
     }),
 });

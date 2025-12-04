@@ -35,12 +35,14 @@ The `amplify/backend.ts` file uses AWS CDK constructs to define:
 
 ### Client → Lambda
 
-1. **Client**: tRPC client calls `trpc.posts.list.useQuery()`
+1. **Client**: tRPC client calls `trpc.posts.list.useQuery()` (React Query handles polling)
 2. **WebSocket Link**: Serializes to `{ id, type: 'query', path: 'posts.list', input: {...} }`
 3. **AppSync Events**: Routes message to Lambda function via WebSocket
 4. **Lambda**: Receives event, parses tRPC request, executes procedure
 5. **Response**: Lambda returns tRPC response through WebSocket
-6. **Client**: Receives and deserializes response
+6. **Client**: Receives and deserializes response, React Query caches and manages refetching
+
+**Note**: React Query automatically handles data fetching with configurable polling intervals (default: 5s stale time). This provides efficient updates without requiring real-time subscriptions.
 
 ### Event Types
 
