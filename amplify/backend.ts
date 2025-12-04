@@ -100,8 +100,8 @@ backend.auth.resources.authenticatedUserIamRole.attachInlinePolicy(
   })
 );
 const vpcConfig = {
-  SecurityGroupIds: ['sg-01be46a33248bed51'],
-  SubnetIds: ['subnet-07fd5a0e65be82d04'],
+  SecurityGroupIds: ['sg-01ee46a3eee8bed51'],
+  SubnetIds: ['subnet-07fd5e0e65eee2d04'],
 };
 backend.eventsHandler.resources.cfnResources.cfnFunction.addPropertyOverride(
   'VpcConfig',
