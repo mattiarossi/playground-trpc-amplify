@@ -16,6 +16,11 @@ import {
   needsChunking,
   type ChunkedMessage,
 } from './chunking-utils';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import { clientSessions } from '../../src/server/db/schema';
+import { eq, and, lt, sql } from 'drizzle-orm';
+import { randomUUID } from 'crypto';
 
 
 
@@ -29,26 +34,115 @@ if (!DATABASE_URL) {
 }
 const chunkStore = new DrizzleChunkStore(DATABASE_URL);
 
+// Initialize database connection for session management
+const dbClient = postgres(DATABASE_URL);
+const db = drizzle(dbClient);
+
 // Initialize AppSync Events Resolver
 const resolver = new AppSyncEventsResolver({ logger });
 
 /**
  * Handle SUBSCRIBE operation
- * Clients subscribe to a channel to receive tRPC responses
+ * Security: Block subscriptions to trpc/* channels unless session is validated
+ * Prevents eavesdropping on other users' request/response traffic
  */
 resolver.onSubscribe('/*', async (event: AppSyncEventsSubscribeEvent) => {
+  const channelPath = event.info.channel.path;
   logger.info('Client subscribing to channel', {
-    channelPath: event.info.channel.path,
+    channelPath,
     identity: event.identity,
   });
 
-  // For subscribe events, we simply acknowledge the subscription
-  // The client will start receiving published events after this
+  // Block all subscriptions to trpc/* channels by default
+  if (channelPath.startsWith('/trpc/')) {
+    // Extract the part after /trpc/
+    const pathAfterTrpc = channelPath.substring(6); // Remove '/trpc/' prefix
+    
+    // Allow subscriptions to temporary session-request channels
+    // These are used during initial session setup before a session exists
+    if (pathAfterTrpc.startsWith('session-request-')) {
+      const identity = event.identity as any;
+      const userSub = identity?.sub;
+      
+      if (!userSub) {
+        logger.warn('Blocked session-request subscription: no user identity', {
+          channelPath,
+        });
+        throw new Error('Authentication required');
+      }
+      
+      logger.info('Allowing temporary session-request channel subscription', {
+        channelPath,
+        userSub,
+      });
+      
+      // Allow this subscription without session validation
+      return {};
+    }
+    
+    // For regular trpc/<session-id> channels, validate the session
+    const sessionId = pathAfterTrpc;
+    
+    // Get user identity
+    const identity = event.identity as any;
+    const userSub = identity?.sub;
+    
+    if (!userSub) {
+      logger.warn('Blocked subscription attempt: no user identity', {
+        channelPath,
+      });
+      throw new Error('Authentication required to subscribe to trpc channels');
+    }
+    
+    // Validate that this session belongs to the authenticated user
+    try {
+      const session = await db
+        .select()
+        .from(clientSessions)
+        .where(
+          and(
+            eq(clientSessions.sessionId, sessionId),
+            eq(clientSessions.userId, userSub)
+          )
+        )
+        .limit(1);
+      
+      if (!session || session.length === 0) {
+        logger.warn('Blocked subscription attempt: session not found or unauthorized', {
+          channelPath,
+          sessionId,
+          userSub,
+        });
+        throw new Error('Invalid or unauthorized session');
+      }
+      
+      // Update last used timestamp
+      await db
+        .update(clientSessions)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(clientSessions.sessionId, sessionId));
+      
+      logger.info('Subscription validated and confirmed', {
+        channelPath,
+        sessionId,
+        userSub,
+      });
+    } catch (error) {
+      logger.error('Session validation failed', {
+        error,
+        channelPath,
+        sessionId,
+        userSub,
+      });
+      throw new Error('Session validation failed');
+    }
+  }
+
+  // Allow subscription to non-trpc channels (e.g., subscriptions/*)
   logger.info('Subscription confirmed for channel', {
     channel: event.info.channel.path,
   });
 
-  // Return empty or success - subscription is automatically handled by AppSync
   return {};
 });
 
@@ -57,13 +151,22 @@ resolver.onSubscribe('/*', async (event: AppSyncEventsSubscribeEvent) => {
  * Process tRPC requests and return responses, with support for chunked messages
  */
 resolver.onPublish('/*', async (payload: any, event: AppSyncEventsPublishEvent) => {
+  const channelPath = event.info.channel.path;
   logger.info('Processing message', {
-    channelPath: event.info.channel.path,
+    channelPath,
+    channelSegments: event.info.channel.segments,
     identity: event.identity,
     isChunked: payload.isChunked || false,
     isChunkRequest: payload.isChunkRequest || false,
     type: payload.type,
+    payloadKeys: Object.keys(payload || {}),
   });
+
+  // Handle client session request
+  if (payload.type === 'request_client_session') {
+    logger.info('Handling session request', { channelPath, userSub: (event.identity as any)?.sub, clientUuid: payload.clientUuid });
+    return await handleClientSessionRequest(event, payload);
+  }
 
   // Check if this is a chunk fetch request (compact format)
   if (payload.type === 'chunk_req') {
@@ -437,5 +540,127 @@ async function processTRPCRequest(message: any, lambdaEvent: AppSyncEventsPublis
         },
       },
     };
+  }
+}
+
+/**
+ * Handle client session request
+ * Generate a deterministic session UUID based on client UUID and user identity
+ * This prevents creating multiple sessions when a client reconnects
+ */
+async function handleClientSessionRequest(event: AppSyncEventsPublishEvent, payload?: any): Promise<any> {
+  const identity = event.identity as any;
+  const userSub = identity?.sub;
+  
+  if (!userSub) {
+    logger.error('Session request without authentication', {
+      identity: event.identity,
+    });
+    throw new Error('Authentication required to request a session');
+  }
+  
+  // Get client UUID from payload
+  const clientUuid = payload?.clientUuid;
+  if (!clientUuid) {
+    logger.error('Session request without client UUID', { userSub });
+    throw new Error('Client UUID required for session request');
+  }
+  
+  // Generate deterministic session ID from user sub + client UUID
+  // This ensures the same client gets the same session ID on reconnection
+  const sessionId = generateDeterministicSessionId(userSub, clientUuid);
+  
+  try {
+    // Clean up expired sessions (24 hours)
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await cleanupExpiredSessions(twentyFourHoursAgo);
+    
+    // Check if session already exists
+    const existingSession = await db
+      .select()
+      .from(clientSessions)
+      .where(eq(clientSessions.sessionId, sessionId))
+      .limit(1);
+    
+    if (existingSession && existingSession.length > 0) {
+      // Session exists, update last used timestamp
+      await db
+        .update(clientSessions)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(clientSessions.sessionId, sessionId));
+      
+      logger.info('Reusing existing client session', {
+        sessionId,
+        userSub,
+        clientUuid,
+      });
+    } else {
+      // Create new session
+      await db.insert(clientSessions).values({
+        sessionId,
+        userId: userSub,
+        createdAt: new Date(),
+        lastUsedAt: new Date(),
+      });
+      
+      logger.info('Created new client session', {
+        sessionId,
+        userSub,
+        clientUuid,
+      });
+    }
+    
+    return {
+      type: 'session_created',
+      sessionId,
+    };
+  } catch (error) {
+    logger.error('Failed to create client session', {
+      error,
+      userSub,
+      clientUuid,
+    });
+    throw new Error('Failed to create client session');
+  }
+}
+
+/**
+ * Generate a deterministic session ID from user sub and client UUID
+ * Uses crypto.createHash to create a stable UUID v4-like identifier
+ */
+function generateDeterministicSessionId(userSub: string, clientUuid: string): string {
+  const crypto = require('crypto');
+  
+  // Combine user sub and client UUID, then hash
+  const input = `${userSub}:${clientUuid}`;
+  const hash = crypto.createHash('sha256').update(input).digest('hex');
+  
+  // Format as UUID v4: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+  // Take first 32 hex chars and format them
+  return [
+    hash.substring(0, 8),
+    hash.substring(8, 12),
+    '4' + hash.substring(13, 16), // Version 4
+    ((parseInt(hash.substring(16, 18), 16) & 0x3f) | 0x80).toString(16) + hash.substring(18, 20), // Variant bits
+    hash.substring(20, 32),
+  ].join('-');
+}
+
+/**
+ * Clean up expired sessions (inactive for 24+ hours)
+ */
+async function cleanupExpiredSessions(expirationDate: Date): Promise<void> {
+  try {
+    const result = await db
+      .delete(clientSessions)
+      .where(lt(clientSessions.lastUsedAt, expirationDate));
+    
+    logger.info('Cleaned up expired sessions', {
+      expirationDate,
+    });
+  } catch (error) {
+    logger.warn('Failed to cleanup expired sessions', {
+      error,
+    });
   }
 }
