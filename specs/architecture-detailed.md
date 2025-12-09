@@ -5,7 +5,7 @@
 ```mermaid
 graph TB
     subgraph Client["CLIENT (Browser)"]
-        NextJS["Next.js 15 App (React 19)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• App Router (SSR + Client Components)<br/>• TailwindCSS for styling<br/>• tRPC React Query hooks (with polling)<br/>• AWS Amplify client (auth + config)<br/>• WebSocket connection for transport"]
+        NextJS["Next.js 16 App (React 19)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• App Router (SSR + Client Components)<br/>• TailwindCSS for styling<br/>• tRPC React Query hooks (with polling)<br/>• AWS Amplify client (auth + config)<br/>• WebSocket connection for transport"]
     end
     
     subgraph Backend["AWS AMPLIFY GEN2 BACKEND"]
@@ -317,7 +317,7 @@ erDiagram
 ### Development
 ## Technology Choices - Rationale
 
-### Next.js 15
+### Next.js 16
 - Industry standard for React SSR
 - Excellent developer experience
 - Built-in API routes
