@@ -1,19 +1,16 @@
 'use client';
 
-import { trpc } from '@/lib/trpc/provider';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
 import { getInitials } from '@/lib/utils/avatar';
+import { useTag } from '@/lib/hooks/useTags';
 
 export default function TagDetailPage() {
   const params = useParams();
   const slug = params?.slug as string;
 
-  const { data: tag, isLoading, error } = trpc.tags.bySlug.useQuery(
-    { slug },
-    { enabled: !!slug }
-  );
+  const { data: tag, isLoading, error } = useTag(slug);
 
   if (isLoading) {
     return (

@@ -1,36 +1,23 @@
 'use client';
 
-import { trpc } from '@/lib/trpc/provider';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
 import { useState } from 'react';
 import { useAuthenticator } from '@aws-amplify/ui-react';
-import { useIsAdmin } from '@/lib/hooks/useIsAdmin';
 import { getInitials } from '@/lib/utils/avatar';
+import { useUserByName, useUpdateUser } from '@/lib/hooks/useUsers';
+import { useIsAdmin } from '@/lib/hooks/useIsAdmin';
 
 export default function UserProfilePage() {
   const params = useParams();
   const username = params?.name as string;
   const [isEditing, setIsEditing] = useState(false);
   const { user: currentUser } = useAuthenticator((context) => [context.user]);
-  const { isAdmin } = useIsAdmin();
+  const { isAdmin, isLoading: isAdminLoading } = useIsAdmin();
 
-  const { data: user, isLoading, error, refetch } = trpc.users.byName.useQuery(
-    { name: username },
-    { enabled: !!username }
-  );
-
-  const updateUserMutation = trpc.users.update.useMutation({
-    onSuccess: () => {
-      refetch();
-      setIsEditing(false);
-      alert('Profile updated successfully!');
-    },
-    onError: (error) => {
-      alert(`Error updating profile: ${error.message}`);
-    },
-  });
+  const { data: user, isLoading, error } = useUserByName(username);
+  const updateUserMutation = useUpdateUser();
 
   const [formData, setFormData] = useState({
     name: '',
@@ -49,13 +36,24 @@ export default function UserProfilePage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (username) {
-      updateUserMutation.mutate({
-        name: username,
-        newName: formData.name !== user?.name ? formData.name : undefined,
-        bio: formData.bio,
-        avatarUrl: formData.avatarUrl,
-      });
+    if (username && user) {
+      updateUserMutation.mutate(
+        {
+          id: user.id,
+          name: formData.name !== user?.name ? formData.name : undefined,
+          bio: formData.bio,
+          avatarUrl: formData.avatarUrl,
+        },
+        {
+          onSuccess: () => {
+            setIsEditing(false);
+            alert('Profile updated successfully!');
+          },
+          onError: (error) => {
+            alert(`Error updating profile: ${error.message}`);
+          },
+        }
+      );
     }
   };
 

@@ -96,6 +96,18 @@ export const postsRouter = createTRPCRouter({
         limit: limit + 1,
         offset: cursor || 0,
         orderBy: [desc(posts.createdAt)],
+        columns: {
+          id: true,
+          title: true,
+          slug: true,
+          excerpt: true,
+          published: true,
+          authorId: true,
+          viewCount: true,
+          createdAt: true,
+          updatedAt: true,
+          // Exclude content field for performance
+        },
         with: {
           author: {
             columns: {
@@ -146,6 +158,18 @@ export const postsRouter = createTRPCRouter({
       const items = await ctx.db.query.posts.findMany({
         where: and(...conditions),
         orderBy: [desc(posts.createdAt)],
+        columns: {
+          id: true,
+          title: true,
+          slug: true,
+          excerpt: true,
+          published: true,
+          authorId: true,
+          viewCount: true,
+          createdAt: true,
+          updatedAt: true,
+          // Exclude content field for performance
+        },
         with: {
           author: {
             columns: {

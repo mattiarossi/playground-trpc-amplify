@@ -1,6 +1,7 @@
 'use client';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { createTRPCReact } from '@trpc/react-query';
 import { useState, useEffect } from 'react';
 import type { AppRouter } from '@/server/trpc/routers';
@@ -21,8 +22,21 @@ export function TRPCProvider({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 5 * 1000,
+        // Data is considered fresh for 30 seconds
+        staleTime: 30 * 1000,
+        // Cache persists for 5 minutes
+        gcTime: 5 * 60 * 1000,
+        // Disable automatic refetch on window focus by default
+        // Individual queries can override this
         refetchOnWindowFocus: false,
+        // Retry failed queries twice
+        retry: 2,
+        // Exponential backoff for retries
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+      },
+      mutations: {
+        // Retry failed mutations once
+        retry: 1,
       },
     },
   }));
@@ -87,6 +101,9 @@ export function TRPCProvider({ children }: { children: React.ReactNode }) {
     <trpc.Provider client={trpcClient} queryClient={queryClient}>
       <QueryClientProvider client={queryClient}>
         {children}
+        {process.env.NODE_ENV === 'development' && (
+          <ReactQueryDevtools initialIsOpen={false} />
+        )}
       </QueryClientProvider>
     </trpc.Provider>
   );

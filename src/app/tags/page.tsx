@@ -1,10 +1,10 @@
 'use client';
 
-import { trpc } from '@/lib/trpc/provider';
 import Link from 'next/link';
+import { useTags } from '@/lib/hooks/useTags';
 
 export default function TagsPage() {
-  const { data: tags, isLoading, error } = trpc.tags.list.useQuery();
+  const { data: tags, isLoading, error } = useTags();
 
   if (isLoading) {
     return (

@@ -8,7 +8,7 @@ import '@aws-amplify/ui-react/styles.css';
 import { Amplify } from 'aws-amplify';
 import Navbar from '@/components/Navbar';
 import Sidebar from '@/components/Sidebar';
-import { trpc } from '@/lib/trpc/provider';
+import { useUser } from '@/lib/hooks/useUsers';
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -31,11 +31,8 @@ function LayoutContent({
   userId: string; 
   userEmail?: string;
 }) {
-  // Fetch the user's display name from the database
-  const { data: userData } = trpc.users.byId.useQuery(
-    { id: userId },
-    { enabled: !!userId }
-  );
+  // Fetch the user's display name from the database using custom hook
+  const { data: userData } = useUser(userId);
 
   return (
     <div className="min-h-screen bg-gray-50">

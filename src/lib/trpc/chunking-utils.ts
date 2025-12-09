@@ -72,7 +72,14 @@ export function chunkMessage(data: any): ChunkedMessage[] {
     const chunkBytes = bytes.slice(start, end);
     
     // Convert to base64 for safe transmission
-    const chunkData = btoa(String.fromCharCode(...chunkBytes));
+    // Process in smaller batches to avoid stack overflow with large arrays
+    let binaryString = '';
+    const batchSize = 8192; // Process 8KB at a time
+    for (let j = 0; j < chunkBytes.length; j += batchSize) {
+      const batch = chunkBytes.slice(j, Math.min(j + batchSize, chunkBytes.length));
+      binaryString += String.fromCharCode(...batch);
+    }
+    const chunkData = btoa(binaryString);
     
     chunks.push({
       isChunked: true,

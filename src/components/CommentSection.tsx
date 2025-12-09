@@ -1,9 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { trpc } from '@/lib/trpc/provider';
 import { formatDistanceToNow } from 'date-fns';
 import { getAvatarUrl } from '@/lib/utils/avatar';
+import { useComments, useCreateComment } from '@/lib/hooks/useComments';
 
 interface CommentSectionProps {
   postId: number;
@@ -12,41 +12,38 @@ interface CommentSectionProps {
 export function CommentSection({ postId }: CommentSectionProps) {
   const [newComment, setNewComment] = useState('');
   const [replyTo, setReplyTo] = useState<number | null>(null);
-
-  const utils = trpc.useUtils();
   
-  const { data: comments, isLoading } = trpc.comments.byPostId.useQuery(
-    {
-      postId,
-      includeReplies: true,
-    },
-    {
-      // Refetch when window regains focus (user switches back to tab)
-      refetchOnWindowFocus: true,
-      // Refetch every 10 seconds while page is active
-      refetchInterval: 10000,
-      refetchIntervalInBackground: false,
-    }
-  );
-
-  const createComment = trpc.comments.create.useMutation({
-    onSuccess: () => {
-      setNewComment('');
-      setReplyTo(null);
-      utils.comments.byPostId.invalidate({ postId });
-    },
+  // Use custom hook with proper cache management and real-time updates
+  const { data: comments, isLoading } = useComments(postId, {
+    includeReplies: true,
+    refetchInterval: 10000, // Poll every 10 seconds for updates
   });
+
+  // Use custom hook with optimistic updates
+  const createComment = useCreateComment(postId);
+
+  const handleSubmitComment = () => {
+    createComment.mutate(
+      {
+        content: newComment,
+        postId,
+        parentId: replyTo || undefined,
+      },
+      {
+        onSuccess: () => {
+          setNewComment('');
+          setReplyTo(null);
+        },
+      }
+    );
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!newComment.trim()) return;
 
-    createComment.mutate({
-      content: newComment,
-      postId,
-      parentId: replyTo || undefined,
-    });
+    handleSubmitComment();
   };
 
   return (

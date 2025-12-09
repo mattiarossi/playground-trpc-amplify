@@ -1,11 +1,12 @@
 'use client';
 
 import { trpc } from '@/lib/trpc/provider';
-import { useIsAdmin } from '@/lib/hooks/useIsAdmin';
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useIsAdmin } from '@/lib/hooks/useIsAdmin';
+import { useAdminPublishPost, useDeletePost } from '@/lib/hooks/usePosts';
 
 export default function AdminManagePostsPage() {
   const router = useRouter();
@@ -14,64 +15,67 @@ export default function AdminManagePostsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [showUnpublished, setShowUnpublished] = useState(true);
 
-  const { data, isLoading, error, refetch } = trpc.posts.adminListAll.useQuery(
+  const { data, isLoading, error } = trpc.posts.adminListAll.useQuery(
     { 
       limit: 50,
       search: searchTerm || undefined,
       publishedOnly: !showUnpublished,
     },
-    { enabled: isAdmin }
+    { 
+      enabled: isAdmin,
+      staleTime: 30 * 1000,
+    }
   );
 
-  const adminPublishMutation = trpc.posts.adminPublish.useMutation({
-    onSuccess: () => {
-      refetch();
-    },
-    onError: (error) => {
-      alert(`Error publishing post: ${error.message}`);
-    },
-  });
-
-  const adminUnpublishMutation = trpc.posts.adminUnpublish.useMutation({
-    onSuccess: () => {
-      refetch();
-    },
-    onError: (error) => {
-      alert(`Error unpublishing post: ${error.message}`);
-    },
-  });
-
-  const adminDeleteMutation = trpc.posts.adminDelete.useMutation({
-    onSuccess: () => {
-      refetch();
-      setDeletingId(null);
-    },
-    onError: (error) => {
-      alert(`Error deleting post: ${error.message}`);
-      setDeletingId(null);
-    },
-  });
+  // Use custom hooks with automatic cache management
+  const { publish: adminPublishMutation, unpublish: adminUnpublishMutation } = useAdminPublishPost();
+  const adminDeleteMutation = useDeletePost();
 
   const handlePublish = (postId: number, title: string) => {
     if (confirm(`Publish "${title}"?`)) {
-      adminPublishMutation.mutate({ id: postId });
+      adminPublishMutation.mutate(
+        { id: postId },
+        {
+          onError: (error) => {
+            alert(`Error publishing post: ${error.message}`);
+          },
+        }
+      );
     }
   };
 
   const handleUnpublish = (postId: number, title: string) => {
     if (confirm(`Unpublish "${title}"?`)) {
-      adminUnpublishMutation.mutate({ id: postId });
+      adminUnpublishMutation.mutate(
+        { id: postId },
+        {
+          onError: (error) => {
+            alert(`Error unpublishing post: ${error.message}`);
+          },
+        }
+      );
     }
   };
 
   const handleDelete = (postId: number, title: string) => {
     if (confirm(`Are you sure you want to delete "${title}"? This action cannot be undone.`)) {
       setDeletingId(postId);
-      adminDeleteMutation.mutate({ id: postId });
+      adminDeleteMutation.mutate(
+        { id: postId },
+        {
+          onSuccess: () => {
+            setDeletingId(null);
+          },
+          onError: (error) => {
+            alert(`Error deleting post: ${error.message}`);
+            setDeletingId(null);
+          },
+        }
+      );
     }
   };
 
-  if (isAdminLoading) {
+  if (isAdminLoading || (isLoading && !data)) {
     return (
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="animate-pulse">
