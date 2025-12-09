@@ -53,6 +53,7 @@ export class AppSyncWebSocketLink {
   private isConnecting = false;
   private isConnected = false;
   private isSubscribed = false;
+  private isSubscribing = false; // Track if subscription is in progress
   private messageQueue: any[] = [];
   private sessionId: string; // Unique session ID for this client instance
   private channelName: string; // AppSync Events channel name - unique per client
@@ -75,6 +76,8 @@ export class AppSyncWebSocketLink {
     // This ensures secure server-side session management
     this.sessionId = '';
     this.channelName = '';
+    // Add instance ID for debugging
+    (this as any).__instanceId = Math.random().toString(36).substring(7);
   }
 
   /**
@@ -87,7 +90,8 @@ export class AppSyncWebSocketLink {
    */
   public isHealthy(): boolean {
     const isOpen = this.ws?.readyState === WebSocket.OPEN;
-    const isEstablished = this.isConnected && this.isSubscribed;
+    // Consider established if subscribed OR currently subscribing to main channel
+    const isEstablished = this.isConnected && (this.isSubscribed || this.isSubscribing);
     
     // Consider unhealthy if we've had multiple publish_errors recently
     const now = Date.now();
@@ -95,7 +99,18 @@ export class AppSyncWebSocketLink {
       (now - this.lastPublishErrorTime < 5000) && // Within last 5 seconds
       this.publishErrorCount >= 2; // At least 2 consecutive errors
     
-    return isOpen && isEstablished && !hasRecentPublishErrors;
+    const healthy = isOpen && isEstablished && !hasRecentPublishErrors;
+    
+    if (!healthy) {
+      console.warn('[AppSync] Health check failed:', {
+        wsReadyState: this.ws?.readyState,
+        isConnected: this.isConnected,
+        isSubscribed: this.isSubscribed,
+        hasRecentPublishErrors
+      });
+    }
+    
+    return healthy;
   }
 
   private getBase64URLEncoded(authorization: Record<string, string>): string {
@@ -121,19 +136,73 @@ export class AppSyncWebSocketLink {
     }, this.connectionTimeoutMs);
   }
 
+  /**
+   * Wait for a temporary subscription to be confirmed
+   */
+  private waitForSubscriptionConfirmation(tempSubKey: string, timeoutMs = 5000): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const startTime = Date.now();
+      
+      const checkConfirmation = () => {
+        if ((window as any)[tempSubKey]?.confirmed) {
+          delete (window as any)[tempSubKey];
+          resolve();
+        } else if (Date.now() - startTime > timeoutMs) {
+          delete (window as any)[tempSubKey];
+          reject(new Error('Subscription confirmation timeout'));
+        } else {
+          // Use requestAnimationFrame for efficient polling
+          requestAnimationFrame(checkConfirmation);
+        }
+      };
+      
+      requestAnimationFrame(checkConfirmation);
+    });
+  }
+
+  /**
+   * Wait for session ID to be received from server
+   */
+  private waitForSessionId(timeoutMs = 10000): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const startTime = Date.now();
+      
+      const checkSessionId = () => {
+        if (this.sessionId) {
+          resolve();
+        } else if (Date.now() - startTime > timeoutMs) {
+          reject(new Error('Session request timeout'));
+        } else {
+          requestAnimationFrame(checkSessionId);
+        }
+      };
+      
+      requestAnimationFrame(checkSessionId);
+    });
+  }
+
   private connect(): Promise<WebSocket> {
     if (this.ws?.readyState === WebSocket.OPEN && this.isConnected) {
       return Promise.resolve(this.ws);
     }
 
     if (this.isConnecting) {
-      return new Promise((resolve) => {
-        const checkConnection = setInterval(() => {
+      // Return a promise that resolves when connection is ready
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Connection timeout'));
+        }, 30000); // 30 second timeout
+        
+        const checkConnection = () => {
           if (this.ws?.readyState === WebSocket.OPEN && this.isConnected) {
-            clearInterval(checkConnection);
+            clearTimeout(timeout);
             resolve(this.ws);
+          } else {
+            requestAnimationFrame(checkConnection);
           }
-        }, 100);
+        };
+        
+        requestAnimationFrame(checkConnection);
       });
     }
 
@@ -185,11 +254,6 @@ export class AppSyncWebSocketLink {
         this.ws.onmessage = (event) => {
           try {
             const response = JSON.parse(event.data);
-            
-            // Debug logging for session setup
-            if (!this.sessionId && response.type !== 'ka') {
-              console.log('[AppSync] Message during session setup:', response.type, response);
-            }
 
             // Handle connection_ack
             if (response.type === 'connection_ack') {
@@ -211,9 +275,18 @@ export class AppSyncWebSocketLink {
 
             // Handle subscribe_success
             if (response.type === 'subscribe_success') {
-              // Verify the subscription ID matches what we sent
+              // Check if this is for the temporary session subscription
+              const tempSubKey = `__tempSub_${response.id}`;
+              if ((window as any)[tempSubKey]) {
+                (window as any)[tempSubKey].confirmed = true;
+                return;
+              }
+              
+              // Verify the subscription ID matches what we sent for main channel
               if (response.id === this.subscriptionId) {
                 this.isSubscribed = true;
+                this.isSubscribing = false; // Subscription completed successfully
+                
                 // Reset publish error tracking on successful subscription
                 this.publishErrorCount = 0;
                 this.lastPublishErrorTime = null;
@@ -237,6 +310,7 @@ export class AppSyncWebSocketLink {
             if (response.type === 'subscribe_error') {
               // Reset subscription state on error
               this.isSubscribed = false;
+              this.isSubscribing = false; // Subscription failed
               this.subscriptionId = null;
               console.error('[AppSync] Subscription error:', response);
               
@@ -250,13 +324,30 @@ export class AppSyncWebSocketLink {
 
             // Handle data events (tRPC responses and subscription events)
             if (response.type === 'data' && response.event) {
-              const eventData = JSON.parse(response.event);
+              // Parse event if it's a string, otherwise use as-is
+              let eventData = typeof response.event === 'string' 
+                ? JSON.parse(response.event) 
+                : response.event;
+              
+              // AppSync Events might wrap the response - check for common patterns
+              // If event is just {}, it might be an empty response from publish
+              if (eventData && typeof eventData === 'object' && Object.keys(eventData).length === 0) {
+                return;
+              }
               
               // Check if this is a session creation response
-              if (eventData.type === 'session_created' && eventData.sessionId) {
+              if (eventData && eventData.type === 'session_created' && eventData.sessionId) {
                 this.sessionId = eventData.sessionId;
                 this.channelName = `trpc/${this.sessionId}`;
-                console.log('[AppSync] Received session ID from server:', this.sessionId);
+                
+                // Clean up temporary session subscription mapping
+                if (response.id) {
+                  const tempChannel = this.subscriptionIdToChannel.get(response.id);
+                  if (tempChannel && tempChannel.startsWith('trpc/session-request-')) {
+                    this.subscriptionIdToChannel.delete(response.id);
+                    // Note: We don't unsubscribe from AppSync as it will auto-cleanup
+                  }
+                }
                 
                 // Now subscribe to the tRPC channel with our server-assigned session
                 this.subscribeToChannel(this.currentAuthHeader);
@@ -383,25 +474,40 @@ export class AppSyncWebSocketLink {
               
               // With direct: true, Lambda response comes in publish_success
               // Check successful array for session creation response
+              const sessionRequestId = (window as any).__sessionRequestId;
               if (response.successful && Array.isArray(response.successful) && response.successful.length > 0) {
                 try {
                   const firstSuccess = response.successful[0];
-                  console.log('[AppSync] Publish successful, checking response:', firstSuccess);
                   
-                  // The Lambda response might be in the successful array item
-                  let eventData = firstSuccess;
-                  if (typeof firstSuccess === 'string') {
-                    eventData = JSON.parse(firstSuccess);
-                  }
+                  // Check if this response is for our session request
+                  const isSessionRequest = response.id === (window as any).__lastSessionPublishId;
                   
-                  if (eventData.type === 'session_created' && eventData.sessionId) {
-                    this.sessionId = eventData.sessionId;
-                    this.channelName = `trpc/${this.sessionId}`;
-                    console.log('[AppSync] Received session ID from server:', this.sessionId);
+                  if (isSessionRequest) {
+                    // This is the session request response
+                    // With direct:true, check if response has the Lambda result
+                    // Try multiple possible locations for the Lambda response
+                    let sessionResponse = null;
                     
-                    // Now subscribe to the tRPC channel with our server-assigned session
-                    this.subscribeToChannel(this.currentAuthHeader);
-                    return;
+                    if ((response as any).result) {
+                      sessionResponse = (response as any).result;
+                    } else if ((response as any).data) {
+                      sessionResponse = (response as any).data;
+                    } else if (firstSuccess && typeof firstSuccess === 'object' && 'data' in firstSuccess) {
+                      sessionResponse = (firstSuccess as any).data;
+                    }
+                    
+                    if (sessionResponse && sessionResponse.type === 'session_created' && sessionResponse.sessionId) {
+                      this.sessionId = sessionResponse.sessionId;
+                      this.channelName = `trpc/${this.sessionId}`;
+                      
+                      // Clean up
+                      delete (window as any).__sessionRequestId;
+                      delete (window as any).__lastSessionPublishId;
+                      
+                      // Now subscribe to the tRPC channel with our server-assigned session
+                      this.subscribeToChannel(this.currentAuthHeader);
+                      return;
+                    }
                   }
                 } catch (e) {
                   console.error('[AppSync] Error parsing publish_success response:', e);
@@ -416,7 +522,6 @@ export class AppSyncWebSocketLink {
                   if (eventData.type === 'session_created' && eventData.sessionId) {
                     this.sessionId = eventData.sessionId;
                     this.channelName = `trpc/${this.sessionId}`;
-                    console.log('[AppSync] Received session ID from server:', this.sessionId);
                     
                     // Now subscribe to the tRPC channel with our server-assigned session
                     this.subscribeToChannel(this.currentAuthHeader);
@@ -459,10 +564,20 @@ export class AppSyncWebSocketLink {
           reject(error);
         };
 
-        this.ws.onclose = () => {
+        this.ws.onclose = (event) => {
+          console.log('[AppSync] WebSocket closed:', {
+            code: event.code,
+            reason: event.reason,
+            wasClean: event.wasClean,
+            sessionId: this.sessionId,
+            wasConnected: this.isConnected,
+            wasSubscribed: this.isSubscribed
+          });
+          
           this.isConnecting = false;
           this.isConnected = false;
           this.isSubscribed = false;
+          this.isSubscribing = false; // Reset subscribing flag
           this.subscriptionId = null; // Reset subscription ID on disconnect
           this.ws = null;
           
@@ -472,6 +587,7 @@ export class AppSyncWebSocketLink {
           
           // Attempt to reconnect after 3 seconds
           this.reconnectTimeout = setTimeout(() => {
+            console.log('[AppSync] Attempting to reconnect...');
             this.connect().catch(() => {});
           }, 3000);
         };
@@ -507,40 +623,50 @@ export class AppSyncWebSocketLink {
       authorization: authHeader,
     };
     
-    console.log('[AppSync] Subscribing to temporary session channel:', tempSessionChannel);
+    // Register this temporary subscription so data events can be routed correctly
+    this.subscriptionIdToChannel.set(tempSubscriptionId, tempSessionChannel);
+    
+    // Track that we're waiting for this subscription to be confirmed
+    const tempSubKey = `__tempSub_${tempSubscriptionId}`;
+    (window as any)[tempSubKey] = { confirmed: false, id: tempSubscriptionId };
+    
     this.ws?.send(JSON.stringify(subscribeMessage));
     
-    // Wait a moment for subscription to be established, then send the request
-    setTimeout(() => {
-      // Generate a stable client UUID (store in sessionStorage for persistence across page reloads)
-      let clientUuid = sessionStorage.getItem('trpc_client_uuid');
-      if (!clientUuid) {
-        clientUuid = crypto.randomUUID();
-        sessionStorage.setItem('trpc_client_uuid', clientUuid);
-      }
-      
-      const publishMessage = {
-        type: 'publish',
-        id: requestId,
-        channel: tempSessionChannel,
-        events: [JSON.stringify({ 
-          type: 'request_client_session',
-          clientUuid // Send client UUID to help generate deterministic session ID
-        })],
-        authorization: authHeader,
-      };
-      
-      console.log('[AppSync] Requesting session from server...', { requestId, channel: tempSessionChannel, clientUuid });
-      this.ws?.send(JSON.stringify(publishMessage));
-    }, 100);
-    
-    // Set a timeout for session request (10 seconds)
-    setTimeout(() => {
-      if (!this.sessionId && this.sessionRequested) {
-        console.error('[AppSync] Session request timeout - no response from server');
+    // Wait for subscribe_success before publishing
+    // This ensures the subscription is fully established and won't miss the response
+    this.waitForSubscriptionConfirmation(tempSubKey)
+      .then(() => {
+        // Generate a stable client UUID (store in sessionStorage for persistence across page reloads)
+        let clientUuid = sessionStorage.getItem('trpc_client_uuid');
+        if (!clientUuid) {
+          clientUuid = crypto.randomUUID();
+          sessionStorage.setItem('trpc_client_uuid', clientUuid);
+        }
+        
+        const publishMessage = {
+          type: 'publish',
+          id: requestId,
+          channel: tempSessionChannel,
+          events: [JSON.stringify({ 
+            type: 'request_client_session',
+            clientUuid, // Send client UUID to help generate deterministic session ID
+          })],
+          authorization: authHeader,
+        };
+        
+        // Store both request ID and publish ID so we can match the publish_success response
+        (window as any).__sessionRequestId = requestId;
+        (window as any).__lastSessionPublishId = requestId;
+        
+        this.ws?.send(JSON.stringify(publishMessage));
+        
+        // Wait for session ID with timeout
+        return this.waitForSessionId(10000);
+      })
+      .catch((error) => {
+        console.error('[AppSync] Session setup failed:', error.message);
         this.ws?.close(); // Force reconnect
-      }
-    }, 10000);
+      });
     
     // Note: The response will be handled in the data event handler
     // Once we receive the session_created response, we'll subscribe to the channel
@@ -551,6 +677,7 @@ export class AppSyncWebSocketLink {
     // AppSync requires this ID to be unique per client connection
     this.subscriptionCounter++;
     this.subscriptionId = `sub-${Date.now()}-${this.subscriptionCounter}`;
+    this.isSubscribing = true; // Mark that subscription is in progress
     
     // Use the same authorization object that was used for the WebSocket connection
     // This includes host and Authorization token (if using Cognito)
@@ -561,7 +688,6 @@ export class AppSyncWebSocketLink {
       authorization: authHeader,
     };
     
-    console.log('[AppSync] Subscribing to channel:', this.channelName);
     this.ws?.send(JSON.stringify(subscribeMessage));
   }
 
@@ -581,14 +707,14 @@ export class AppSyncWebSocketLink {
       return;
     }
     
-    // Create a chunk fetch request
+    // Create a chunk fetch request with timeout
     const timeout = setTimeout(() => {
       const chunkFetch = this.pendingChunkFetches.get(messageId);
       if (chunkFetch) {
         chunkFetch.reject(new Error('Timeout fetching chunks'));
         this.pendingChunkFetches.delete(messageId);
       }
-    }, 30000); // 30 second timeout
+    }, 30000); // 30 second timeout - necessary for network operations
     
     const chunks = new Map<number, ChunkedMessage>();
     
@@ -648,7 +774,6 @@ export class AppSyncWebSocketLink {
     
     // Check if we have all chunks
     if (chunkFetch.chunks.size === chunkFetch.totalChunks) {
-      
       // Clear timeout
       clearTimeout(chunkFetch.timeout);
       
@@ -720,7 +845,6 @@ export class AppSyncWebSocketLink {
     const completeMessage = this.chunkStore.addChunk(chunk);
     
     if (completeMessage) {
-      
       // Process the complete message
       if (completeMessage.id && this.pendingRequests.has(completeMessage.id)) {
         const request = this.pendingRequests.get(completeMessage.id)!;
@@ -816,7 +940,7 @@ export class AppSyncWebSocketLink {
         }
       }
 
-      // Set timeout for request
+      // Set timeout for request - necessary for network operations
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id);
@@ -937,23 +1061,34 @@ export class AppSyncWebSocketLink {
 }
 
 // Singleton instance for sharing WebSocket connection
-let sharedWsLink: AppSyncWebSocketLink | null = null;
+// Use globalThis to survive HMR reloads in development
+const globalKey = Symbol.for('__APPSYNC_WS_LINK__');
+const getGlobalWsLink = (): AppSyncWebSocketLink | null => {
+  return (globalThis as any)[globalKey] || null;
+};
+const setGlobalWsLink = (link: AppSyncWebSocketLink | null) => {
+  (globalThis as any)[globalKey] = link;
+};
 
 export function getSharedWebSocketLink(): AppSyncWebSocketLink | null {
-  return sharedWsLink;
+  return getGlobalWsLink();
 }
 
 /**
  * Create tRPC link for AppSync Events WebSocket
+ * Reuses existing instance if available to prevent multiple connections
  */
-
 export function createAppSyncWebSocketLink<TRouter extends AnyRouter>(
   options: WebSocketLinkOptions
 ): TRPCLink<TRouter> {
-  const wsLink = new AppSyncWebSocketLink(options);
+  // Check if we already have an instance
+  let wsLink = getGlobalWsLink();
   
-  // Store as shared instance for use by subscription system
-  sharedWsLink = wsLink;
+  if (!wsLink) {
+    // Create new instance only if one doesn't exist
+    wsLink = new AppSyncWebSocketLink(options);
+    setGlobalWsLink(wsLink);
+  }
 
   return () => {
     return ({ op, next }) => {
