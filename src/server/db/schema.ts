@@ -121,6 +121,20 @@ export const messageChunks = pgTable('message_chunks', {
   pk: uniqueIndex('message_chunks_pk').on(table.messageId, table.chunkIndex),
 }));
 
+// Client Sessions table (for secure WebSocket session management)
+// Maps server-generated session UUIDs to Cognito user IDs
+// Allows multiple sessions per user (multiple tabs/devices)
+// Sessions expire after 24 hours of inactivity
+export const clientSessions = pgTable('client_sessions', {
+  sessionId: varchar('session_id', { length: 36 }).primaryKey(), // UUID v4
+  userId: text('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  lastUsedAt: timestamp('last_used_at').defaultNow().notNull(),
+}, (table) => ({
+  userIdIdx: uniqueIndex('client_sessions_user_id_idx').on(table.userId, table.sessionId),
+  lastUsedIdx: uniqueIndex('client_sessions_last_used_idx').on(table.lastUsedAt),
+}));
+
 // Export types
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -132,3 +146,5 @@ export type Tag = typeof tags.$inferSelect;
 export type NewTag = typeof tags.$inferInsert;
 export type MessageChunk = typeof messageChunks.$inferSelect;
 export type NewMessageChunk = typeof messageChunks.$inferInsert;
+export type ClientSession = typeof clientSessions.$inferSelect;
+export type NewClientSession = typeof clientSessions.$inferInsert;

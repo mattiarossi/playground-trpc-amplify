@@ -72,6 +72,14 @@ export function useEventsQuery(queryKey: string) {
         setTimeout(connectAndSubscribe, 1000);
         return;
       }
+      
+      // Check if the connection is healthy (not just connected, but fully subscribed and working)
+      if (!wsLink.isHealthy()) {
+        console.warn(`[Subscription] WebSocket link exists but is not healthy, will retry`);
+        // Retry after a delay to allow reconnection
+        setTimeout(connectAndSubscribe, 2000);
+        return;
+      }
 
       // Subscribe to the subscriptions channel using the shared WebSocket
       handlerId = await wsLink.subscribeToAdditionalChannel(

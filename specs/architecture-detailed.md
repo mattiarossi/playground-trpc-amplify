@@ -11,7 +11,7 @@ graph TB
     subgraph Backend["AWS AMPLIFY GEN2 BACKEND"]
         Cognito["AWS Cognito (Authentication)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• User Pool for authentication<br/>• Email + Password login<br/>• JWT token generation"]
         
-        AppSync["AWS AppSync Events (WebSocket Layer)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• Event-driven pub/sub<br/>• WebSocket connection management<br/>• Real-time event distribution<br/>• Custom tRPC event channel<br/>• 240KB message size limit"]
+        AppSync["AWS AppSync Events (WebSocket Layer)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• Event-driven pub/sub<br/>• WebSocket connection management<br/>• Real-time event distribution<br/>• Per-client session channels (trpc/<session-id>)<br/>• Session ID generated server-side from user + client UUID<br/>• 240KB message size limit"]
         
         Lambda["AWS Lambda (tRPC Handler Function)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>• Processes tRPC requests<br/>• Routes to appropriate procedures<br/>• Validates authentication<br/>• Executes business logic<br/>• Handles message chunking"]
         
@@ -120,8 +120,15 @@ sequenceDiagram
     participant UI as React Component
     
     Client->>WS: Connect<br/>wss://[endpoint]/event<br/>+ Authorization header
-    Client->>WS: Subscribe to tRPC channel
-    Note over WS: Maintained Connection
+    Client->>WS: Subscribe to temp channel<br/>trpc/session-request-{timestamp}
+    Client->>WS: Request session ID<br/>+ clientUuid
+    WS->>Lambda: Forward session request
+    Lambda->>Lambda: Generate deterministic session ID<br/>hash(userSub + clientUuid)
+    Lambda->>DB: Store session in client_sessions table
+    Lambda->>WS: Return session ID
+    WS->>Client: Session ID received
+    Client->>WS: Subscribe to trpc/{session-id}
+    Note over WS: Maintained Connection<br/>Each client has unique channel
     
     alt Small Message (<230KB)
         Client->>WS: Publish tRPC request
@@ -156,6 +163,114 @@ sequenceDiagram
         Client->>UI: Update component
     end
 ```
+
+## Session Management System
+
+### Overview
+
+The application uses a **per-client session architecture** where each browser client receives a unique, server-generated session ID. This enables:
+- Isolated communication channels per client
+- Secure request routing
+- Session tracking and management
+- Cross-client real-time updates via separate subscription channels
+
+### Session ID Generation
+
+Session IDs are **deterministically generated** on the backend using:
+
+```typescript
+sessionId = hash(userSub + clientUuid)
+```
+
+- **userSub**: Cognito user identity (from JWT token)
+- **clientUuid**: Client-generated UUID (persisted in browser)
+- **Deterministic**: Same user + same browser = same session ID across reconnects
+- **Format**: UUID v4 format for consistency
+
+### Session Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant WS as WebSocket
+    participant Lambda
+    participant DB as PostgreSQL
+    
+    Note over Browser: Generate clientUuid<br/>(stored in localStorage)
+    Browser->>WS: Connect with Cognito JWT
+    Browser->>WS: Subscribe to temp channel<br/>trpc/session-request-{timestamp}
+    Browser->>WS: Publish session request<br/>{ clientUuid }
+    
+    WS->>Lambda: Forward request
+    Lambda->>Lambda: Extract userSub from JWT
+    Lambda->>Lambda: Generate sessionId<br/>hash(userSub + clientUuid)
+    Lambda->>DB: INSERT or UPDATE<br/>client_sessions table
+    Lambda->>WS: Publish response<br/>{ sessionId }
+    
+    WS->>Browser: Receive sessionId
+    Browser->>Browser: Store sessionId in memory
+    Browser->>WS: Subscribe to trpc/{sessionId}
+    
+    Note over Browser,DB: Session established<br/>Ready for tRPC communication
+```
+
+### Session Storage
+
+Sessions are stored in the `client_sessions` PostgreSQL table:
+
+```typescript
+{
+  sessionId: string (PK)    // Deterministic hash
+  userId: string            // Cognito userSub
+  clientUuid: string        // Browser client UUID
+  createdAt: timestamp      // Initial session creation
+  lastUsedAt: timestamp     // Last activity time
+}
+```
+
+### Session Validation
+
+Every subscription to a `trpc/{session-id}` channel is validated:
+
+1. **Authentication Check**: User must have valid Cognito JWT
+2. **Ownership Check**: Session ID must belong to the authenticated user
+3. **Database Lookup**: Session must exist in `client_sessions` table
+4. **Timestamp Update**: `lastUsedAt` updated on successful validation
+
+Unauthorized subscription attempts are **blocked** with an error.
+
+### Channel Architecture
+
+The system uses **two types of channels**:
+
+#### 1. Client Channels (Request/Response)
+- **Format**: `trpc/{session-id}`
+- **Purpose**: Direct tRPC communication for specific client
+- **Security**: Session validated against user identity
+- **Lifetime**: Active as long as session exists
+
+#### 2. Subscription Channels (Cross-Client Updates)
+- **Format**: `subscriptions/{resource}` (e.g., `subscriptions/posts`)
+- **Purpose**: Broadcast mutation events to all interested clients
+- **Security**: JWT authentication required
+- **Content**: Mutation metadata (resource, type, IDs, related data)
+
+### Session Cleanup
+
+Stale sessions are automatically cleaned up:
+
+- **Trigger**: Scheduled Lambda job (e.g., daily)
+- **Criteria**: Sessions inactive for 24+ hours
+- **Action**: DELETE from `client_sessions` table
+- **Effect**: Next connection creates new session
+
+### Security Benefits
+
+1. **Isolation**: Each client has private communication channel
+2. **No Cross-Talk**: Clients cannot subscribe to others' channels
+3. **Audit Trail**: All sessions logged with user + client identity
+4. **Replay Prevention**: Session IDs tied to specific user
+5. **Graceful Expiry**: Old sessions cleaned up automatically
 
 ## Type Safety Flow
 
@@ -213,6 +328,27 @@ erDiagram
         timestamp updatedAt
     }
 ```
+
+### Session Management Schema (PostgreSQL)
+
+```mermaid
+erDiagram
+    CLIENT_SESSIONS {
+        varchar sessionId PK "Deterministic hash"
+        varchar userId "Cognito userSub"
+        varchar clientUuid "Browser client UUID"
+        timestamp createdAt "Initial creation"
+        timestamp lastUsedAt "Last activity"
+    }
+```
+
+**Purpose**: Track active WebSocket sessions for secure channel routing
+
+**Key Features**:
+- Deterministic session IDs enable reconnection to same channel
+- Sessions validated on every channel subscription
+- Automatic cleanup of inactive sessions (24+ hours)
+- Indexed on userId for fast lookups
 
 ### Message Chunking Schema (PostgreSQL)
 
@@ -352,7 +488,10 @@ erDiagram
 - Integrated with Cognito authentication
 - Event-driven pub/sub architecture
 - Built-in connection management
-- **Client Strategy**: Uses React Query polling over WebSocket for efficient data fetching
+- **Per-Client Sessions**: Each client gets a unique channel `trpc/{session-id}` for isolated communication
+- **Session Management**: Session IDs generated server-side using deterministic hash of user identity + client UUID
+- **Security**: Sessions stored in PostgreSQL and validated on subscription to prevent unauthorized access
+- **Real-Time Updates**: Subscription channels (e.g., `subscriptions/posts`) for cross-client mutation notifications
 - **Note**: 240KB message size limit handled via transparent PostgreSQL-based chunking
 
 ### PostgreSQL for Chunking
