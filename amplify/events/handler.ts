@@ -18,8 +18,9 @@ import {
 } from './chunking-utils';
 
 
+
 // Initialize Logger
-const logger = new Logger({ serviceName: 'appsync-events-handler' });
+const logger = new Logger({ serviceName: 'xappsync-events-handler' });
 
 // Initialize PostgreSQL chunk store
 const DATABASE_URL = process.env.DATABASE_URL;

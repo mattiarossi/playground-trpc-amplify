@@ -176,11 +176,22 @@ export const usersRouter = createTRPCRouter({
       }
 
       // Update by name or id
-      const [updatedUser] = await ctx.db
+      await ctx.db
         .update(users)
         .set(updates)
-        .where(name ? eq(users.name, name) : eq(users.id, id!))
-        .returning();
+        .where(name ? eq(users.name, name) : eq(users.id, id!));
+
+      // Fetch the updated user with all fields
+      const updatedUser = await ctx.db.query.users.findFirst({
+        where: eq(users.id, targetUser.id),
+      });
+
+      if (!updatedUser) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Failed to fetch updated user',
+        });
+      }
 
       return updatedUser;
     }),

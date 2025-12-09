@@ -1,11 +1,11 @@
 'use client';
 
-import { trpc } from '@/lib/trpc/provider';
 import { useAuthenticator } from '@aws-amplify/ui-react';
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { usePostsByAuthor, useUpdatePost, useDeletePost } from '@/lib/hooks/usePosts';
 
 export default function ManagePostsPage() {
   const router = useRouter();
@@ -14,45 +14,42 @@ export default function ManagePostsPage() {
 
   const authorId = user?.userId || user?.username || '';
 
-  const { data: posts, isLoading, error, refetch } = trpc.posts.byAuthor.useQuery(
-    { 
-      authorId,
-      includeUnpublished: true,
-    },
-    { enabled: !!authorId }
-  );
+  // Use custom hook with automatic cache management
+  const { data: posts, isLoading, error } = usePostsByAuthor(authorId, true);
 
-  const updatePostMutation = trpc.posts.update.useMutation({
-    onSuccess: () => {
-      refetch();
-    },
-    onError: (error) => {
-      alert(`Error updating post: ${error.message}`);
-    },
-  });
-
-  const deletePostMutation = trpc.posts.delete.useMutation({
-    onSuccess: () => {
-      refetch();
-      setDeletingId(null);
-    },
-    onError: (error) => {
-      alert(`Error deleting post: ${error.message}`);
-      setDeletingId(null);
-    },
-  });
+  // Use custom hooks with optimistic updates
+  const updatePostMutation = useUpdatePost();
+  const deletePostMutation = useDeletePost();
 
   const togglePublish = (postId: number, currentPublished: boolean) => {
-    updatePostMutation.mutate({
-      id: postId,
-      published: !currentPublished,
-    });
+    updatePostMutation.mutate(
+      {
+        id: postId,
+        published: !currentPublished,
+      },
+      {
+        onError: (error) => {
+          alert(`Error updating post: ${error.message}`);
+        },
+      }
+    );
   };
 
   const handleDelete = (postId: number, title: string) => {
     if (confirm(`Are you sure you want to delete "${title}"?`)) {
       setDeletingId(postId);
-      deletePostMutation.mutate({ id: postId });
+      deletePostMutation.mutate(
+        { id: postId },
+        {
+          onSuccess: () => {
+            setDeletingId(null);
+          },
+          onError: (error) => {
+            alert(`Error deleting post: ${error.message}`);
+            setDeletingId(null);
+          },
+        }
+      );
     }
   };
 

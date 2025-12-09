@@ -67,15 +67,6 @@ export const commentsRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       const { authorId, ...commentData } = input;
 
-      // Log incoming data for debugging
-      console.log('Comment create mutation called:', {
-        inputAuthorId: authorId,
-        hasCtxUser: !!ctx.user,
-        ctxUserSub: ctx.user?.sub,
-        ctxUserUsername: ctx.user?.username,
-        postId: input.postId,
-      });
-
       // Get or create user based on authenticated user
       let finalAuthorId = authorId;
 
@@ -117,9 +108,6 @@ export const commentsRouter = createTRPCRouter({
           message: 'Must be authenticated to create a comment',
         });
       }
-
-      // Log final author ID being used
-      console.log('Creating comment with finalAuthorId:', finalAuthorId);
 
       const [newComment] = await ctx.db
         .insert(comments)
@@ -163,11 +151,15 @@ export const commentsRouter = createTRPCRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const [updatedComment] = await ctx.db
+      await ctx.db
         .update(comments)
         .set({ content: input.content, updatedAt: new Date() })
-        .where(eq(comments.id, input.id))
-        .returning();
+        .where(eq(comments.id, input.id));
+
+      // Fetch the updated comment with all fields
+      const updatedComment = await ctx.db.query.comments.findFirst({
+        where: eq(comments.id, input.id),
+      });
 
       if (!updatedComment) {
         throw new TRPCError({
@@ -183,19 +175,22 @@ export const commentsRouter = createTRPCRouter({
   delete: publicProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const [deletedComment] = await ctx.db
-        .delete(comments)
-        .where(eq(comments.id, input.id))
-        .returning();
+      // Fetch the comment before deletion
+      const commentToDelete = await ctx.db.query.comments.findFirst({
+        where: eq(comments.id, input.id),
+      });
 
-      if (!deletedComment) {
+      if (!commentToDelete) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Comment not found',
         });
       }
 
-      return deletedComment;
+      // Delete the comment
+      await ctx.db.delete(comments).where(eq(comments.id, input.id));
+
+      return commentToDelete;
     }),
 
   // Subscribe to new comments for a post

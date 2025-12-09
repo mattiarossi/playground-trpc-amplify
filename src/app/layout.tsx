@@ -5,20 +5,15 @@ import "./globals.css";
 import { TRPCProvider } from "@/lib/trpc/provider";
 import { Authenticator } from '@aws-amplify/ui-react';
 import '@aws-amplify/ui-react/styles.css';
-import { Amplify } from 'aws-amplify';
 import Navbar from '@/components/Navbar';
 import Sidebar from '@/components/Sidebar';
-import { trpc } from '@/lib/trpc/provider';
+import { useUser } from '@/lib/hooks/useUsers';
+import { configureAmplify } from '@/lib/utils/amplify-config';
 
 const inter = Inter({ subsets: ["latin"] });
 
-// Configure Amplify
-try {
-  const outputs = require('../../amplify_outputs.json');
-  Amplify.configure(outputs);
-} catch (e) {
-  console.error('Failed to load amplify_outputs.json');
-}
+// Configure Amplify immediately when module loads
+configureAmplify();
 
 function LayoutContent({ 
   children, 
@@ -31,11 +26,8 @@ function LayoutContent({
   userId: string; 
   userEmail?: string;
 }) {
-  // Fetch the user's display name from the database
-  const { data: userData } = trpc.users.byId.useQuery(
-    { id: userId },
-    { enabled: !!userId }
-  );
+  // Fetch the user's display name from the database using custom hook
+  const { data: userData } = useUser(userId);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -64,7 +56,7 @@ export default function RootLayout({
           {({ signOut, user }) => (
             <TRPCProvider>
               <LayoutContent
-                signOut={signOut}
+                signOut={signOut || (() => {})}
                 userId={user?.username || ''}
                 userEmail={user?.signInDetails?.loginId}
               >

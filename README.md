@@ -6,7 +6,7 @@ A modern full-stack blog platform built with Next.js, tRPC, Drizzle ORM, Postgre
 
 ### Key Components
 
-1. **Frontend (Next.js 15 + React 19)**
+1. **Frontend (Next.js 16 + React 19)**
    - Client-side tRPC React Query hooks
    - Custom WebSocket adapter for AppSync Events
    - Tailwind CSS for styling

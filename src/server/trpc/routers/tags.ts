@@ -75,18 +75,21 @@ export const tagsRouter = createTRPCRouter({
   delete: adminProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const [deletedTag] = await ctx.db
-        .delete(tags)
-        .where(eq(tags.id, input.id))
-        .returning();
+      // Fetch the tag before deletion
+      const tagToDelete = await ctx.db.query.tags.findFirst({
+        where: eq(tags.id, input.id),
+      });
 
-      if (!deletedTag) {
+      if (!tagToDelete) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Tag not found',
         });
       }
 
-      return deletedTag;
+      // Delete the tag
+      await ctx.db.delete(tags).where(eq(tags.id, input.id));
+
+      return tagToDelete;
     }),
 });

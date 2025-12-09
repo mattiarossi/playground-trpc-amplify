@@ -1,9 +1,9 @@
 'use client';
 
-import { trpc } from '@/lib/trpc/provider';
 import Link from 'next/link';
 import { useState } from 'react';
 import { useIsAdmin } from '@/lib/hooks/useIsAdmin';
+import { useTags, useCreateTag, useDeleteTag } from '@/lib/hooks/useTags';
 
 export default function TagsManagementPage() {
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -11,42 +11,44 @@ export default function TagsManagementPage() {
   const [newTagSlug, setNewTagSlug] = useState('');
 
   const { isAdmin, isLoading: isAdminLoading } = useIsAdmin();
-  const { data: tags, isLoading, error, refetch } = trpc.tags.list.useQuery();
-
-  const createTagMutation = trpc.tags.create.useMutation({
-    onSuccess: () => {
-      refetch();
-      setNewTagName('');
-      setNewTagSlug('');
-      setShowCreateForm(false);
-      alert('Tag created successfully!');
-    },
-    onError: (error) => {
-      alert(`Error creating tag: ${error.message}`);
-    },
-  });
-
-  const deleteTagMutation = trpc.tags.delete.useMutation({
-    onSuccess: () => {
-      refetch();
-      alert('Tag deleted successfully!');
-    },
-    onError: (error) => {
-      alert(`Error deleting tag: ${error.message}`);
-    },
-  });
+  const { data: tags, isLoading, error } = useTags();
+  const createTagMutation = useCreateTag();
+  const deleteTagMutation = useDeleteTag();
 
   const handleCreateTag = (e: React.FormEvent) => {
     e.preventDefault();
-    createTagMutation.mutate({
-      name: newTagName,
-      slug: newTagSlug || newTagName.toLowerCase().replace(/\s+/g, '-'),
-    });
+    createTagMutation.mutate(
+      {
+        name: newTagName,
+        slug: newTagSlug || newTagName.toLowerCase().replace(/\s+/g, '-'),
+      },
+      {
+        onSuccess: () => {
+          setNewTagName('');
+          setNewTagSlug('');
+          setShowCreateForm(false);
+          alert('Tag created successfully!');
+        },
+        onError: (error) => {
+          alert(`Error creating tag: ${error.message}`);
+        },
+      }
+    );
   };
 
   const handleDeleteTag = (id: number, name: string) => {
     if (confirm(`Are you sure you want to delete the tag "${name}"? This will remove it from all posts.`)) {
-      deleteTagMutation.mutate({ id });
+      deleteTagMutation.mutate(
+        { id },
+        {
+          onSuccess: () => {
+            alert('Tag deleted successfully!');
+          },
+          onError: (error) => {
+            alert(`Error deleting tag: ${error.message}`);
+          },
+        }
+      );
     }
   };
 
@@ -59,7 +61,7 @@ export default function TagsManagementPage() {
     setNewTagSlug(generatedSlug);
   };
 
-  if (isAdminLoading || isLoading) {
+  if (isLoading || isAdminLoading) {
     return (
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="animate-pulse">

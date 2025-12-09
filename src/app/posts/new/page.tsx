@@ -1,11 +1,14 @@
 'use client';
 
 import { useState } from 'react';
-import { trpc } from '@/lib/trpc/provider';
 import { useRouter } from 'next/navigation';
+import { useAuthenticator } from '@aws-amplify/ui-react';
+import { useTags, useCreateTag } from '@/lib/hooks/useTags';
+import { useCreatePost, useCheckSlug } from '@/lib/hooks/usePosts';
 
 export default function NewPostPage() {
   const router = useRouter();
+  const { user } = useAuthenticator((context) => [context.user]);
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
   const [content, setContent] = useState('');
@@ -17,63 +20,46 @@ export default function NewPostPage() {
   const [newTagName, setNewTagName] = useState('');
   const [showNewTagInput, setShowNewTagInput] = useState(false);
 
-  // Fetch available tags
-  const { data: tags, refetch: refetchTags } = trpc.tags.list.useQuery();
-
-  const createPost = trpc.posts.create.useMutation({
-    onSuccess: (data) => {
-      console.log('onSuccess called with data:', data);
-      if (data && data.slug) {
-        router.push(`/posts/${data.slug}`);
-      } else {
-        console.error('Data or slug is undefined:', data);
-      }
-    },
-    onError: (error) => {
-      console.error('Create post error:', error);
-      // If slug conflict, suggest an alternative
-      if (error.message.includes('slug') && error.message.includes('already exists')) {
-        const timestamp = Date.now();
-        const suggestedSlug = `${slug}-${timestamp}`;
-        if (confirm(`The slug "${slug}" is already taken. Would you like to use "${suggestedSlug}" instead?`)) {
-          setSlug(suggestedSlug);
-        }
-      }
-    },
-  });
-
-  const createTagMutation = trpc.tags.create.useMutation({
-    onSuccess: (newTag) => {
-      refetchTags();
-      setSelectedTags((prev) => [...prev, newTag.id]);
-      setNewTagName('');
-      setShowNewTagInput(false);
-    },
-    onError: (error) => {
-      console.error('Error creating tag:', error.message);
-    },
-  });
+  // Use custom hooks with automatic cache management
+  const { data: tags } = useTags();
+  const createPost = useCreatePost();
+  const createTagMutation = useCreateTag();
+  const checkSlugQuery = useCheckSlug(slug, slug.length > 0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    createPost.mutate({
-      title,
-      slug: slug || title.toLowerCase().replace(/\s+/g, '-'),
-      content,
-      excerpt: excerpt || undefined,
-      published,
-      tagIds: selectedTags.length > 0 ? selectedTags : undefined,
-    });
+    const authorId = user?.userId || user?.username || '';
+    
+    createPost.mutate(
+      {
+        title,
+        slug: slug || title.toLowerCase().replace(/\s+/g, '-'),
+        content,
+        excerpt: excerpt || undefined,
+        published,
+        tagIds: selectedTags.length > 0 ? selectedTags : undefined,
+        authorId,
+      },
+      {
+        onSuccess: (data) => {
+          if (data && data.slug) {
+            router.push(`/posts/${data.slug}`);
+          }
+        },
+        onError: (error) => {
+          // If slug conflict, suggest an alternative
+          if (error.message.includes('slug') && error.message.includes('already exists')) {
+            const timestamp = Date.now();
+            const suggestedSlug = `${slug}-${timestamp}`;
+            if (confirm(`The slug "${slug}" is already taken. Would you like to use "${suggestedSlug}" instead?`)) {
+              setSlug(suggestedSlug);
+            }
+          }
+        },
+      }
+    );
   };
-
-  const checkSlugQuery = trpc.posts.checkSlug.useQuery(
-    { slug },
-    { 
-      enabled: slug.length > 0,
-      refetchOnWindowFocus: false,
-    }
-  );
 
   const validateSlug = async () => {
     if (!slug || slug.trim().length === 0) {
@@ -90,7 +76,7 @@ export default function NewPostPage() {
         setSlugError('This slug is already taken. Please choose a different one.');
       }
     } catch (error) {
-      console.error('Error checking slug:', error);
+      // Error checking slug
     } finally {
       setIsCheckingSlug(false);
     }
@@ -114,10 +100,22 @@ export default function NewPostPage() {
       .replace(/[^a-z0-9\s-]/g, '')
       .replace(/\s+/g, '-')
       .trim();
-    createTagMutation.mutate({
-      name: newTagName,
-      slug: tagSlug,
-    });
+    createTagMutation.mutate(
+      {
+        name: newTagName,
+        slug: tagSlug,
+      },
+      {
+        onSuccess: (newTag) => {
+          setSelectedTags((prev) => [...prev, newTag.id]);
+          setNewTagName('');
+          setShowNewTagInput(false);
+        },
+        onError: (error) => {
+          // Error creating tag
+        },
+      }
+    );
   };
 
   return (

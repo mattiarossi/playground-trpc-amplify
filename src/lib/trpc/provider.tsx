@@ -1,6 +1,7 @@
 'use client';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { createTRPCReact } from '@trpc/react-query';
 import { useState, useEffect } from 'react';
 import type { AppRouter } from '@/server/trpc/routers';
@@ -21,8 +22,17 @@ export function TRPCProvider({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 5 * 1000,
+        // Disable automatic refetch on window focus by default
+        // Individual queries can override this
         refetchOnWindowFocus: false,
+        // Retry failed queries twice
+        retry: 2,
+        // Exponential backoff for retries
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+      },
+      mutations: {
+        // Retry failed mutations once
+        retry: 1,
       },
     },
   }));
@@ -34,12 +44,10 @@ export function TRPCProvider({ children }: { children: React.ReactNode }) {
     let region = process.env.NEXT_PUBLIC_APPSYNC_EVENTS_REGION || 'us-east-1';
 
     // Try to load amplify_outputs.json dynamically
+    // Note: Amplify.configure() is called in layout.tsx, so we only read the config here
     try {
       // @ts-ignore
       const outputs = require('../../../amplify_outputs.json');
-      
-      // Configure Amplify with full outputs (includes auth)
-      Amplify.configure(outputs);
       
       if (outputs?.custom?.events) {
         httpEndpoint = outputs.custom.events.url;
@@ -52,14 +60,12 @@ export function TRPCProvider({ children }: { children: React.ReactNode }) {
         region = outputs.custom.events.aws_region;
       }
     } catch (e) {
-      console.log('amplify_outputs.json not found, using environment variables');
+      // amplify_outputs.json not found, using environment variables
     }
 
     if (!httpEndpoint) {
       console.error('AppSync Events endpoint not configured. Please run "npx ampx sandbox" or set NEXT_PUBLIC_APPSYNC_EVENTS_ENDPOINT');
     }
-
-    console.log('Configuring tRPC client with:', { httpEndpoint, wsEndpoint, region });
 
     return trpc.createClient({
       links: [
@@ -87,6 +93,9 @@ export function TRPCProvider({ children }: { children: React.ReactNode }) {
     <trpc.Provider client={trpcClient} queryClient={queryClient}>
       <QueryClientProvider client={queryClient}>
         {children}
+        {process.env.NODE_ENV === 'development' && (
+          <ReactQueryDevtools initialIsOpen={false} />
+        )}
       </QueryClientProvider>
     </trpc.Provider>
   );

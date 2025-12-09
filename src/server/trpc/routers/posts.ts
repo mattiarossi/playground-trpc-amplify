@@ -96,6 +96,18 @@ export const postsRouter = createTRPCRouter({
         limit: limit + 1,
         offset: cursor || 0,
         orderBy: [desc(posts.createdAt)],
+        columns: {
+          id: true,
+          title: true,
+          slug: true,
+          excerpt: true,
+          published: true,
+          authorId: true,
+          viewCount: true,
+          createdAt: true,
+          updatedAt: true,
+          // Exclude content field for performance
+        },
         with: {
           author: {
             columns: {
@@ -146,6 +158,18 @@ export const postsRouter = createTRPCRouter({
       const items = await ctx.db.query.posts.findMany({
         where: and(...conditions),
         orderBy: [desc(posts.createdAt)],
+        columns: {
+          id: true,
+          title: true,
+          slug: true,
+          excerpt: true,
+          published: true,
+          authorId: true,
+          viewCount: true,
+          createdAt: true,
+          updatedAt: true,
+          // Exclude content field for performance
+        },
         with: {
           author: {
             columns: {
@@ -376,11 +400,15 @@ export const postsRouter = createTRPCRouter({
       const { id, tagIds, ...updateData } = input;
 
       // Update post
-      const [updatedPost] = await ctx.db
+      await ctx.db
         .update(posts)
         .set({ ...updateData, updatedAt: new Date() })
-        .where(eq(posts.id, id))
-        .returning();
+        .where(eq(posts.id, id));
+
+      // Fetch the updated post with all fields
+      const updatedPost = await ctx.db.query.posts.findFirst({
+        where: eq(posts.id, id),
+      });
 
       if (!updatedPost) {
         throw new TRPCError({
@@ -437,22 +465,25 @@ export const postsRouter = createTRPCRouter({
   delete: publicProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const [deletedPost] = await ctx.db
-        .delete(posts)
-        .where(eq(posts.id, input.id))
-        .returning();
+      // Fetch the post before deletion
+      const postToDelete = await ctx.db.query.posts.findFirst({
+        where: eq(posts.id, input.id),
+      });
 
-      if (!deletedPost) {
+      if (!postToDelete) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Post not found',
         });
       }
 
-      // Emit event for real-time updates
-      postEvents.emit('deletePost', deletedPost);
+      // Delete the post
+      await ctx.db.delete(posts).where(eq(posts.id, input.id));
 
-      return deletedPost;
+      // Emit event for real-time updates
+      postEvents.emit('deletePost', postToDelete);
+
+      return postToDelete;
     }),
 
   // Subscribe to new posts
@@ -510,11 +541,15 @@ export const postsRouter = createTRPCRouter({
   adminPublish: adminProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const [updatedPost] = await ctx.db
+      await ctx.db
         .update(posts)
         .set({ published: true, updatedAt: new Date() })
-        .where(eq(posts.id, input.id))
-        .returning();
+        .where(eq(posts.id, input.id));
+
+      // Fetch the updated post with all fields
+      const updatedPost = await ctx.db.query.posts.findFirst({
+        where: eq(posts.id, input.id),
+      });
 
       if (!updatedPost) {
         throw new TRPCError({
@@ -555,11 +590,15 @@ export const postsRouter = createTRPCRouter({
   adminUnpublish: adminProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const [updatedPost] = await ctx.db
+      await ctx.db
         .update(posts)
         .set({ published: false, updatedAt: new Date() })
-        .where(eq(posts.id, input.id))
-        .returning();
+        .where(eq(posts.id, input.id));
+
+      // Fetch the updated post with all fields
+      const updatedPost = await ctx.db.query.posts.findFirst({
+        where: eq(posts.id, input.id),
+      });
 
       if (!updatedPost) {
         throw new TRPCError({
@@ -600,21 +639,24 @@ export const postsRouter = createTRPCRouter({
   adminDelete: adminProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const [deletedPost] = await ctx.db
-        .delete(posts)
-        .where(eq(posts.id, input.id))
-        .returning();
+      // Fetch the post before deletion
+      const postToDelete = await ctx.db.query.posts.findFirst({
+        where: eq(posts.id, input.id),
+      });
 
-      if (!deletedPost) {
+      if (!postToDelete) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Post not found',
         });
       }
 
-      // Emit event for real-time updates
-      postEvents.emit('deletePost', deletedPost);
+      // Delete the post
+      await ctx.db.delete(posts).where(eq(posts.id, input.id));
 
-      return deletedPost;
+      // Emit event for real-time updates
+      postEvents.emit('deletePost', postToDelete);
+
+      return postToDelete;
     }),
 });

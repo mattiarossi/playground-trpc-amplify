@@ -1,14 +1,14 @@
 'use client';
 
-import { trpc } from '@/lib/trpc/provider';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
 import { CommentSection } from '@/components/CommentSection';
 import { getAvatarUrl } from '@/lib/utils/avatar';
-import { useIsAdmin } from '@/lib/hooks/useIsAdmin';
 import { useAuthenticator } from '@aws-amplify/ui-react';
 import { useState } from 'react';
+import { usePost, useAdminPublishPost, useDeletePost } from '@/lib/hooks/usePosts';
+import { useIsAdmin } from '@/lib/hooks/useIsAdmin';
 
 export default function PostPage() {
   const params = useParams();
@@ -18,70 +18,54 @@ export default function PostPage() {
   const { isAdmin, isLoading: isAdminLoading } = useIsAdmin();
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const { data: post, isLoading, error, refetch } = trpc.posts.bySlug.useQuery(
-    { slug },
-    {
-      // Refetch when window regains focus
-      refetchOnWindowFocus: true,
-      // Refetch every 15 seconds
-      refetchInterval: 15000,
-      refetchIntervalInBackground: false,
-    }
-  );
-
-  const adminPublishMutation = trpc.posts.adminPublish.useMutation({
-    onSuccess: () => {
-      refetch();
-    },
-    onError: (error) => {
-      alert(`Error publishing post: ${error.message}`);
-    },
-  });
-
-  const adminUnpublishMutation = trpc.posts.adminUnpublish.useMutation({
-    onSuccess: () => {
-      refetch();
-    },
-    onError: (error) => {
-      alert(`Error unpublishing post: ${error.message}`);
-    },
-  });
-
-  const adminDeleteMutation = trpc.posts.adminDelete.useMutation({
-    onSuccess: () => {
-      router.push('/posts/manage');
-    },
-    onError: (error) => {
-      alert(`Error deleting post: ${error.message}`);
-      setIsDeleting(false);
-    },
-  });
+  // Use custom hook with automatic cache management
+  const { data: post, isLoading, error } = usePost(slug);
+  const { publish: adminPublishMutation, unpublish: adminUnpublishMutation } = useAdminPublishPost();
+  const adminDeleteMutation = useDeletePost();
 
   const handleAdminPublish = (postId: number) => {
     if (confirm('Publish this post?')) {
-      adminPublishMutation.mutate({ id: postId });
+      adminPublishMutation.mutate(
+        { id: postId },
+        {
+          onError: (error) => {
+            alert(`Error publishing post: ${error.message}`);
+          },
+        }
+      );
     }
   };
 
   const handleAdminUnpublish = (postId: number) => {
     if (confirm('Unpublish this post?')) {
-      adminUnpublishMutation.mutate({ id: postId });
+      adminUnpublishMutation.mutate(
+        { id: postId },
+        {
+          onError: (error) => {
+            alert(`Error unpublishing post: ${error.message}`);
+          },
+        }
+      );
     }
   };
 
   const handleAdminDelete = (postId: number, title: string) => {
     if (confirm(`Are you sure you want to delete "${title}"? This action cannot be undone.`)) {
       setIsDeleting(true);
-      adminDeleteMutation.mutate({ id: postId });
+      adminDeleteMutation.mutate(
+        { id: postId },
+        {
+          onSuccess: () => {
+            router.push('/posts/manage');
+          },
+          onError: (error) => {
+            alert(`Error deleting post: ${error.message}`);
+            setIsDeleting(false);
+          },
+        }
+      );
     }
   };
-
-  // Debug logging
-  console.log('Post data:', post);
-  console.log('Post data type:', typeof post);
-  console.log('Post data keys:', post ? Object.keys(post) : 'null/undefined');
-  console.log('Is loading:', isLoading);
-  console.log('Error:', error);
 
   if (error) {
     return (

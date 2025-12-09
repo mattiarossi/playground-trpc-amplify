@@ -3,8 +3,12 @@
 import { trpc } from '@/lib/trpc/provider';
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
+import { useEventsQuery } from '@/lib/utils/query-subscriptions';
 
 export default function HomePage() {
+  // Subscribe to posts mutations for real-time updates
+  useEventsQuery('posts');
+  
   const { data, isLoading, error, fetchNextPage, hasNextPage} = 
     trpc.posts.list.useInfiniteQuery(
       { limit: 10 },
@@ -17,9 +21,6 @@ export default function HomePage() {
         },
         // Refetch when window regains focus
         refetchOnWindowFocus: true,
-        // Refetch every 15 seconds while active
-        refetchInterval: 15000,
-        refetchIntervalInBackground: false,
       }
     );
 
