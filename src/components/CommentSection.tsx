@@ -16,7 +16,6 @@ export function CommentSection({ postId }: CommentSectionProps) {
   // Use custom hook with proper cache management and real-time updates
   const { data: comments, isLoading } = useComments(postId, {
     includeReplies: true,
-    refetchInterval: 10000, // Poll every 10 seconds for updates
   });
 
   // Use custom hook with optimistic updates

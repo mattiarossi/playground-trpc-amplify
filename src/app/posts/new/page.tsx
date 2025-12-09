@@ -43,15 +43,11 @@ export default function NewPostPage() {
       },
       {
         onSuccess: (data) => {
-          console.log('onSuccess called with data:', data);
           if (data && data.slug) {
             router.push(`/posts/${data.slug}`);
-          } else {
-            console.error('Data or slug is undefined:', data);
           }
         },
         onError: (error) => {
-          console.error('Create post error:', error);
           // If slug conflict, suggest an alternative
           if (error.message.includes('slug') && error.message.includes('already exists')) {
             const timestamp = Date.now();
@@ -80,7 +76,7 @@ export default function NewPostPage() {
         setSlugError('This slug is already taken. Please choose a different one.');
       }
     } catch (error) {
-      console.error('Error checking slug:', error);
+      // Error checking slug
     } finally {
       setIsCheckingSlug(false);
     }
@@ -116,7 +112,7 @@ export default function NewPostPage() {
           setShowNewTagInput(false);
         },
         onError: (error) => {
-          console.error('Error creating tag:', error.message);
+          // Error creating tag
         },
       }
     );

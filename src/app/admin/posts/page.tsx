@@ -23,7 +23,6 @@ export default function AdminManagePostsPage() {
     },
     { 
       enabled: isAdmin,
-      staleTime: 30 * 1000,
     }
   );
 

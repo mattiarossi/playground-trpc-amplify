@@ -3,35 +3,40 @@
 import { trpc } from '@/lib/trpc/provider';
 import type { AppRouter } from '@/server/trpc/routers';
 import type { inferRouterOutputs } from '@trpc/server';
+import { useEventsQuery } from '@/lib/utils/query-subscriptions';
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type Tag = RouterOutputs['tags']['list'][number];
 
 /**
  * Hook for fetching all tags with cache management
+ * Uses AppSync Events subscriptions for real-time updates
  */
 export function useTags() {
   const utils = trpc.useUtils();
 
-  const query = trpc.tags.list.useQuery(undefined, {
-    // Tags don't change often, keep them fresh longer
-    staleTime: 5 * 60 * 1000, // 5 minutes
-  });
+  // Subscribe to tags mutations for real-time updates
+  useEventsQuery('tags');
+
+  const query = trpc.tags.list.useQuery(undefined, {});
 
   return query;
 }
 
 /**
  * Hook for fetching a single tag by slug
+ * Uses AppSync Events subscriptions for real-time updates
  */
 export function useTag(slug: string) {
   const utils = trpc.useUtils();
+
+  // Subscribe to tags mutations for real-time updates
+  useEventsQuery('tags');
 
   const query = trpc.tags.bySlug.useQuery(
     { slug },
     {
       enabled: !!slug,
-      staleTime: 5 * 60 * 1000,
     }
   );
 

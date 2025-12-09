@@ -1,17 +1,20 @@
 'use client';
 
 import { trpc } from '@/lib/trpc/provider';
+import { useEventsQuery } from '@/lib/utils/query-subscriptions';
 
 /**
  * Hook for fetching a user by ID
+ * Uses AppSync Events subscriptions for real-time updates
  */
 export function useUser(userId: string) {
+  // Subscribe to users mutations for real-time updates
+  useEventsQuery('users');
+
   const query = trpc.users.byId.useQuery(
     { id: userId },
     {
       enabled: !!userId,
-      // User data doesn't change often
-      staleTime: 5 * 60 * 1000, // 5 minutes
     }
   );
 
@@ -20,15 +23,18 @@ export function useUser(userId: string) {
 
 /**
  * Hook for fetching a user by name
+ * Uses AppSync Events subscriptions for real-time updates
  */
 export function useUserByName(name: string) {
   const utils = trpc.useUtils();
+
+  // Subscribe to users mutations for real-time updates
+  useEventsQuery('users');
 
   const query = trpc.users.byName.useQuery(
     { name },
     {
       enabled: !!name,
-      staleTime: 5 * 60 * 1000,
     }
   );
 

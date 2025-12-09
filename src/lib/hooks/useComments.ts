@@ -3,19 +3,22 @@
 import { trpc } from '@/lib/trpc/provider';
 import type { AppRouter } from '@/server/trpc/routers';
 import type { inferRouterOutputs } from '@trpc/server';
+import { useEventsQuery } from '@/lib/utils/query-subscriptions';
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type Comment = RouterOutputs['comments']['byPostId'][number];
 
 /**
- * Hook for fetching comments for a post with automatic refetching
+ * Hook for fetching comments for a post with real-time updates via subscriptions
  */
 export function useComments(postId: number, options?: {
   includeReplies?: boolean;
-  refetchInterval?: number;
   enabled?: boolean;
 }) {
   const utils = trpc.useUtils();
+
+  // Subscribe to comments mutations for real-time updates
+  useEventsQuery('comments');
 
   const query = trpc.comments.byPostId.useQuery(
     {
@@ -26,9 +29,6 @@ export function useComments(postId: number, options?: {
       enabled: options?.enabled ?? true,
       // Refetch when window regains focus
       refetchOnWindowFocus: true,
-      // Optional polling for real-time updates
-      refetchInterval: options?.refetchInterval ?? false,
-      staleTime: 10 * 1000, // 10 seconds
     }
   );
 

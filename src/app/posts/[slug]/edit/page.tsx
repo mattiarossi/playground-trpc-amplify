@@ -54,11 +54,9 @@ export default function EditPostPage() {
 
   const updatePost = trpc.posts.update.useMutation({
     onSuccess: (data) => {
-      console.log('Post updated successfully:', data);
       router.push(`/posts/${newSlug || slug}`);
     },
     onError: (error) => {
-      console.error('Update post error:', error);
       if (error.message.includes('slug') && error.message.includes('already exists')) {
         setSlugError('This slug is already taken. Please choose a different one.');
       }
@@ -73,7 +71,7 @@ export default function EditPostPage() {
       setShowNewTagInput(false);
     },
     onError: (error) => {
-      console.error('Error creating tag:', error.message);
+      // Error creating tag
     },
   });
 
@@ -124,7 +122,7 @@ export default function EditPostPage() {
         setSlugError('This slug is already taken. Please choose a different one.');
       }
     } catch (error) {
-      console.error('Error checking slug:', error);
+      // Error checking slug
     } finally {
       setIsCheckingSlug(false);
     }

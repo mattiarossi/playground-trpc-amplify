@@ -3,6 +3,7 @@
 import { trpc } from '@/lib/trpc/provider';
 import type { AppRouter } from '@/server/trpc/routers';
 import type { inferRouterOutputs } from '@trpc/server';
+import { useEventsQuery } from '@/lib/utils/query-subscriptions';
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type Post = RouterOutputs['posts']['bySlug'];
@@ -10,16 +11,18 @@ type PostList = RouterOutputs['posts']['list']['items'];
 
 /**
  * Hook for fetching a single post by slug with automatic cache management
+ * Uses AppSync Events subscriptions for real-time updates
  */
 export function usePost(slug: string) {
   const utils = trpc.useUtils();
+  
+  // Subscribe to posts mutations for real-time updates
+  useEventsQuery('posts');
   
   const query = trpc.posts.bySlug.useQuery(
     { slug },
     {
       enabled: !!slug,
-      // Stale after 1 minute for individual posts
-      staleTime: 60 * 1000,
     }
   );
 
@@ -39,15 +42,18 @@ export function usePost(slug: string) {
 
 /**
  * Hook for fetching posts by author with cache management
+ * Uses AppSync Events subscriptions for real-time updates
  */
 export function usePostsByAuthor(authorId: string, includeUnpublished = false) {
   const utils = trpc.useUtils();
+
+  // Subscribe to posts mutations for real-time updates
+  useEventsQuery('posts');
 
   const query = trpc.posts.byAuthor.useQuery(
     { authorId, includeUnpublished },
     {
       enabled: !!authorId,
-      staleTime: 30 * 1000,
     }
   );
 
@@ -205,7 +211,6 @@ export function useCheckSlug(slug: string, enabled = true) {
     { slug },
     {
       enabled: enabled && slug.length > 0,
-      staleTime: 60 * 1000, // Cache for 1 minute
       refetchOnWindowFocus: false,
     }
   );

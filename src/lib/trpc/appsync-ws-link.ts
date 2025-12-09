@@ -54,15 +54,24 @@ export class AppSyncWebSocketLink {
   private isConnected = false;
   private isSubscribed = false;
   private messageQueue: any[] = [];
-  private channelName = 'trpc'; // AppSync Events channel name
+  private sessionId: string; // Unique session ID for this client instance
+  private channelName: string; // AppSync Events channel name - unique per client
   private keepAliveTimeout: NodeJS.Timeout | null = null;
   private connectionTimeoutMs = 300000; // 5 minutes default
   private subscriptionId: string | null = null; // Track subscription ID per connection
   private subscriptionCounter = 0; // Counter for unique subscription IDs
   private chunkStore = new ChunkStore(); // Store for reassembling incoming chunks
   private currentAuthHeader: Record<string, string> = {}; // Store current auth header
+  private subscriptionChannels = new Map<string, Set<string>>(); // Track subscribed channels and their handler IDs
+  private channelHandlers = new Map<string, (data: any) => void>(); // Handlers for non-tRPC channels
+  private subscriptionIdToChannel = new Map<string, string>(); // Map subscription IDs to channel names
 
-  constructor(private options: WebSocketLinkOptions) {}
+  constructor(private options: WebSocketLinkOptions) {
+    // Generate unique session ID for this client instance
+    // This ensures each browser tab/window gets its own dedicated channel
+    this.sessionId = crypto.randomUUID();
+    this.channelName = `trpc/${this.sessionId}`;
+  }
 
   private getBase64URLEncoded(authorization: Record<string, string>): string {
     const json = JSON.stringify(authorization);
@@ -190,10 +199,32 @@ export class AppSyncWebSocketLink {
               return;
             }
 
-            // Handle data events (tRPC responses)
+            // Handle data events (tRPC responses and subscription events)
             if (response.type === 'data' && response.event) {
               const eventData = JSON.parse(response.event);
-              console.log('AppSync event data:', eventData);
+              
+              // Determine which channel this message is for
+              // For data messages, we need to check the subscription ID
+              const channelName = response.id ? this.subscriptionIdToChannel.get(response.id) : null;
+              
+              // Check if this is an event for a subscribed channel (not tRPC)
+              // Additional channels emit raw data that we forward to handlers
+              if (channelName && channelName !== this.channelName) {
+                const handlers = this.subscriptionChannels.get(channelName);
+                if (handlers) {
+                  for (const handlerId of handlers) {
+                    const handler = this.channelHandlers.get(handlerId);
+                    if (handler) {
+                      try {
+                        handler(eventData);
+                      } catch (error) {
+                        console.error(`[AppSync] Error in channel handler:`, error);
+                      }
+                    }
+                  }
+                }
+                return;
+              }
               
               // Check if this is a chunk response
               if (eventData.isChunked && eventData.messageId && eventData.chunkIndex !== undefined) {
@@ -203,17 +234,9 @@ export class AppSyncWebSocketLink {
               
               // Check if this is a chunked response from server
               if (eventData.isChunkedResponse) {
-                console.log('Received chunked response metadata', {
-                  messageId: eventData.messageId,
-                  totalChunks: eventData.totalChunks,
-                  hasFirstChunk: !!eventData.firstChunk,
-                  requestId: eventData.requestId,
-                });
-                
                 // Only process if we have a pending request for this response
                 // (chunked responses are broadcast, so other clients may see them)
                 if (!this.pendingRequests.has(eventData.requestId)) {
-                  console.log('Ignoring chunked response for unknown request:', eventData.requestId);
                   return;
                 }
                 
@@ -248,7 +271,6 @@ export class AppSyncWebSocketLink {
                         ? this.options.transformer.deserialize(serializedData)
                         : serializedData;
                       
-                      console.log('Emitting subscription data:', { path: eventData.subscriptionPath, data });
                       request.observer.next({ result: { type: 'data' as const, data } });
                     }
                   }
@@ -270,11 +292,9 @@ export class AppSyncWebSocketLink {
                   // Response has result.data structure
                   // Deserialize using superjson if transformer is configured
                   const serializedData = eventData.result.data;
-                  console.log('Serialized data:', serializedData);
                   const data = this.options.transformer 
                     ? this.options.transformer.deserialize(serializedData)
                     : serializedData;
-                  console.log('Deserialized data:', data);
                   
                   // For subscriptions, this is the acknowledgment
                   if (request.isSubscription) {
@@ -289,7 +309,6 @@ export class AppSyncWebSocketLink {
                 } else {
                   // This might be the original request being echoed back, not the response
                   // Don't resolve or reject yet - wait for actual response
-                  console.log('Event data has no result, skipping:', eventData);
                   return;
                 }
               }
@@ -347,6 +366,8 @@ export class AppSyncWebSocketLink {
     this.subscriptionCounter++;
     this.subscriptionId = `sub-${Date.now()}-${this.subscriptionCounter}`;
     
+    // Use the same authorization object that was used for the WebSocket connection
+    // This includes host and Authorization token (if using Cognito)
     const subscribeMessage = {
       type: 'subscribe',
       id: this.subscriptionId,
@@ -373,13 +394,6 @@ export class AppSyncWebSocketLink {
       return;
     }
     
-    console.log('Starting chunk fetch for request:', {
-      requestId,
-      messageId,
-      totalChunks,
-      hasFirstChunk: !!firstChunk,
-    });
-    
     // Create a chunk fetch request
     const timeout = setTimeout(() => {
       const chunkFetch = this.pendingChunkFetches.get(messageId);
@@ -394,7 +408,6 @@ export class AppSyncWebSocketLink {
     // If first chunk provided, add it
     if (firstChunk) {
       chunks.set(firstChunk.chunkIndex, firstChunk);
-      console.log(`Added first chunk ${firstChunk.chunkIndex}`);
     }
     
     this.pendingChunkFetches.set(messageId, {
@@ -446,11 +459,8 @@ export class AppSyncWebSocketLink {
     // Store the chunk
     chunkFetch.chunks.set(chunk.chunkIndex, chunk);
     
-    console.log(`Received chunk ${chunk.chunkIndex + 1}/${chunk.totalChunks} for message ${chunk.messageId}`);
-    
     // Check if we have all chunks
     if (chunkFetch.chunks.size === chunkFetch.totalChunks) {
-      console.log('All chunks received, reassembling message');
       
       // Clear timeout
       clearTimeout(chunkFetch.timeout);
@@ -519,17 +529,10 @@ export class AppSyncWebSocketLink {
    * Handle incoming chunked response
    */
   private handleChunkedResponse(chunk: ChunkedMessage): void {
-    console.log('Received chunk:', {
-      messageId: chunk.messageId,
-      chunkIndex: chunk.chunkIndex,
-      totalChunks: chunk.totalChunks,
-    });
-    
     // Add chunk to store and check if message is complete
     const completeMessage = this.chunkStore.addChunk(chunk);
     
     if (completeMessage) {
-      console.log('Message reassembled:', completeMessage);
       
       // Process the complete message
       if (completeMessage.id && this.pendingRequests.has(completeMessage.id)) {
@@ -564,19 +567,6 @@ export class AppSyncWebSocketLink {
 
     return new Promise(async (resolve, reject) => {
       const id = `req-${Math.random().toString(36).substring(7)}`;
-      
-      // Build authorization header
-      const httpHost = new URL(this.options.httpEndpoint).host;
-      const authHeader: Record<string, string> = {
-        host: httpHost,
-      };
-
-      if (this.options.getAuthToken) {
-        const token = await this.options.getAuthToken();
-        if (token) {
-          authHeader.Authorization = token;
-        }
-      }
 
       // Create event payload
       // Serialize input using superjson if transformer is configured
@@ -590,6 +580,7 @@ export class AppSyncWebSocketLink {
         path: operation.path,
         input: serializedInput,
         context: this.options.connectionParams,
+        sessionId: this.sessionId, // Include session ID for server-side logging/debugging
       };
 
       this.pendingRequests.set(id, { 
@@ -603,9 +594,7 @@ export class AppSyncWebSocketLink {
       
       // Check if message needs chunking
       if (needsChunking(eventPayload)) {
-        console.log('Message needs chunking, splitting into chunks...');
         const chunks = chunkMessage(eventPayload);
-        console.log(`Split into ${chunks.length} chunks`);
         
         // Send each chunk as a separate message
         for (const chunk of chunks) {
@@ -676,15 +665,102 @@ export class AppSyncWebSocketLink {
     this.isSubscribed = false;
     this.subscriptionId = null;
   }
+
+  /**
+   * Subscribe to an additional channel (e.g., subscriptions/users)
+   * This allows using the same WebSocket connection for non-tRPC pub/sub
+   */
+  public async subscribeToAdditionalChannel(
+    channel: string,
+    handler: (data: any) => void
+  ): Promise<string> {
+    // Ensure we're connected
+    await this.connect();
+
+    // Generate unique handler ID
+    const handlerId = `handler-${Math.random().toString(36).substring(7)}`;
+
+    // Store the handler
+    this.channelHandlers.set(handlerId, handler);
+
+    // Track which handlers are subscribed to which channels
+    if (!this.subscriptionChannels.has(channel)) {
+      this.subscriptionChannels.set(channel, new Set());
+
+      // Subscribe to this channel
+      const subscriptionCounter = ++this.subscriptionCounter;
+      const subscriptionId = `sub-${Date.now()}-${subscriptionCounter}`;
+      
+      // Track the mapping from subscription ID to channel name
+      this.subscriptionIdToChannel.set(subscriptionId, channel);
+
+      const subscribeMessage = {
+        type: 'subscribe',
+        id: subscriptionId,
+        channel: channel,
+        authorization: this.currentAuthHeader,
+      };
+
+      this.ws?.send(JSON.stringify(subscribeMessage));
+    }
+
+    this.subscriptionChannels.get(channel)!.add(handlerId);
+    return handlerId;
+  }
+
+  /**
+   * Unsubscribe from an additional channel
+   */
+  public unsubscribeFromAdditionalChannel(channel: string, handlerId: string): void {
+    const handlers = this.subscriptionChannels.get(channel);
+    if (handlers) {
+      handlers.delete(handlerId);
+      this.channelHandlers.delete(handlerId);
+
+      // If no more handlers for this channel, unsubscribe
+      if (handlers.size === 0) {
+        this.subscriptionChannels.delete(channel);
+        // Could send unsubscribe message here if needed
+      }
+    }
+  }
+
+  /**
+   * Publish a message to a channel
+   */
+  public async publishToChannel(channel: string, data: any): Promise<void> {
+    await this.connect();
+
+    const publishMessage = {
+      type: 'publish',
+      id: `pub-${Math.random().toString(36).substring(7)}`,
+      channel: channel,
+      events: [JSON.stringify(data)],
+      authorization: this.currentAuthHeader,
+    };
+
+    this.ws?.send(JSON.stringify(publishMessage));
+  }
+}
+
+// Singleton instance for sharing WebSocket connection
+let sharedWsLink: AppSyncWebSocketLink | null = null;
+
+export function getSharedWebSocketLink(): AppSyncWebSocketLink | null {
+  return sharedWsLink;
 }
 
 /**
  * Create tRPC link for AppSync Events WebSocket
  */
+
 export function createAppSyncWebSocketLink<TRouter extends AnyRouter>(
   options: WebSocketLinkOptions
 ): TRPCLink<TRouter> {
   const wsLink = new AppSyncWebSocketLink(options);
+  
+  // Store as shared instance for use by subscription system
+  sharedWsLink = wsLink;
 
   return () => {
     return ({ op, next }) => {
@@ -702,7 +778,6 @@ export function createAppSyncWebSocketLink<TRouter extends AnyRouter>(
             })
             .then((data) => {
               // Initial subscription confirmation
-              console.log('Subscription started:', data);
               // Don't complete - let the subscription stay open
             })
             .catch((error) => {
@@ -711,7 +786,6 @@ export function createAppSyncWebSocketLink<TRouter extends AnyRouter>(
           
           // Return cleanup function
           return () => {
-            console.log('Subscription cleanup');
             // Could send unsubscribe message here
           };
         } else {

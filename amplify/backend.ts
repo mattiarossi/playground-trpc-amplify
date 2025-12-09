@@ -40,7 +40,8 @@ export const lambdaPGStatement1 = new iam.PolicyStatement({
     'cognito-idp:AdminSetUserMFAPreference',
     'cognito-idp:AdminResetUserPassword',
     'cognito-idp:AdminGetUser',
-
+    "appsync:EventConnect",
+    "appsync:EventPublish",
     'events:PutEvents'
   ],
   resources: ['*'],
@@ -56,6 +57,7 @@ const eventsApi = new Events(backend.stack, 'BlogTRPCEvents', {
 // Add environment variables to Lambda
 backend.eventsHandler.addEnvironment('APPSYNC_API_ID', eventsApi.apiId);
 backend.eventsHandler.addEnvironment('CHANNEL_NAMESPACE', 'default');
+backend.eventsHandler.addEnvironment('EVENTS_ENDPOINT', eventsApi.endpoint);
 
 // Add Lambda data source for tRPC handler
 const dsEventsHandler = eventsApi.api.addLambdaDataSource(
@@ -80,6 +82,10 @@ eventsApi.api.addChannelNamespace('trpc', {
     lambdaInvokeType: appsync.LambdaInvokeType.REQUEST_RESPONSE,
   },
 });
+
+// Add subscriptions namespace for query cache invalidation
+// This channel doesn't need Lambda handlers - it's used for direct pub/sub
+eventsApi.api.addChannelNamespace('subscriptions', {});
 
 // Grant the Lambda function permissions to handle events
 backend.eventsHandler.resources.lambda.addToRolePolicy(
