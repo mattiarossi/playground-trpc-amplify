@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createTRPCRouter, publicProcedure } from '../trpc';
+import { createTRPCRouter, publicProcedure, adminProcedure } from '../trpc';
 import { posts, postsTags, tags, users } from '../../db/schema';
 import { eq, desc, like, and, sql } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
@@ -64,6 +64,106 @@ export const postsRouter = createTRPCRouter({
         items,
         nextCursor,
       };
+    }),
+
+  // Admin-only: Get all posts from all users (includes unpublished)
+  adminListAll: adminProcedure
+    .input(
+      z.object({
+        limit: z.number().min(1).max(100).default(50),
+        cursor: z.number().optional(),
+        search: z.string().optional(),
+        publishedOnly: z.boolean().default(false),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { limit, cursor, search, publishedOnly } = input;
+
+      let conditions = [];
+
+      if (publishedOnly) {
+        conditions.push(eq(posts.published, true));
+      }
+
+      if (search) {
+        conditions.push(
+          sql`${posts.title} ILIKE ${`%${search}%`} OR ${posts.content} ILIKE ${`%${search}%`}`
+        );
+      }
+
+      const items = await ctx.db.query.posts.findMany({
+        where: conditions.length > 0 ? and(...conditions) : undefined,
+        limit: limit + 1,
+        offset: cursor || 0,
+        orderBy: [desc(posts.createdAt)],
+        with: {
+          author: {
+            columns: {
+              id: true,
+              name: true,
+              email: true,
+              avatarUrl: true,
+            },
+          },
+          postsTags: {
+            with: {
+              tag: true,
+            },
+          },
+        },
+      });
+
+      let nextCursor: number | undefined = undefined;
+      if (items.length > limit) {
+        items.pop();
+        nextCursor = (cursor || 0) + limit;
+      }
+
+      return {
+        items,
+        nextCursor,
+      };
+    }),
+
+  // Get posts by author (includes unpublished for own posts)
+  byAuthor: publicProcedure
+    .input(
+      z.object({
+        authorId: z.string(),
+        includeUnpublished: z.boolean().default(false),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { authorId, includeUnpublished } = input;
+
+      let conditions = [eq(posts.authorId, authorId)];
+      
+      // Only filter by published if not including unpublished
+      if (!includeUnpublished) {
+        conditions.push(eq(posts.published, true));
+      }
+
+      const items = await ctx.db.query.posts.findMany({
+        where: and(...conditions),
+        orderBy: [desc(posts.createdAt)],
+        with: {
+          author: {
+            columns: {
+              id: true,
+              name: true,
+              email: true,
+              avatarUrl: true,
+            },
+          },
+          postsTags: {
+            with: {
+              tag: true,
+            },
+          },
+        },
+      });
+
+      return items;
     }),
 
   // Get single post by slug
@@ -405,4 +505,116 @@ export const postsRouter = createTRPCRouter({
       };
     });
   }),
+
+  // Admin-only: Publish any post
+  adminPublish: adminProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const [updatedPost] = await ctx.db
+        .update(posts)
+        .set({ published: true, updatedAt: new Date() })
+        .where(eq(posts.id, input.id))
+        .returning();
+
+      if (!updatedPost) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Post not found',
+        });
+      }
+
+      // Fetch complete post with relations for event emission
+      const completePost = await ctx.db.query.posts.findFirst({
+        where: eq(posts.id, updatedPost.id),
+        with: {
+          author: {
+            columns: {
+              id: true,
+              name: true,
+              email: true,
+              avatarUrl: true,
+            },
+          },
+          postsTags: {
+            with: {
+              tag: true,
+            },
+          },
+        },
+      });
+
+      // Emit event for real-time updates
+      if (completePost) {
+        postEvents.emit('updatePost', completePost);
+      }
+
+      return updatedPost;
+    }),
+
+  // Admin-only: Unpublish any post
+  adminUnpublish: adminProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const [updatedPost] = await ctx.db
+        .update(posts)
+        .set({ published: false, updatedAt: new Date() })
+        .where(eq(posts.id, input.id))
+        .returning();
+
+      if (!updatedPost) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Post not found',
+        });
+      }
+
+      // Fetch complete post with relations for event emission
+      const completePost = await ctx.db.query.posts.findFirst({
+        where: eq(posts.id, updatedPost.id),
+        with: {
+          author: {
+            columns: {
+              id: true,
+              name: true,
+              email: true,
+              avatarUrl: true,
+            },
+          },
+          postsTags: {
+            with: {
+              tag: true,
+            },
+          },
+        },
+      });
+
+      // Emit event for real-time updates
+      if (completePost) {
+        postEvents.emit('updatePost', completePost);
+      }
+
+      return updatedPost;
+    }),
+
+  // Admin-only: Delete any post
+  adminDelete: adminProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const [deletedPost] = await ctx.db
+        .delete(posts)
+        .where(eq(posts.id, input.id))
+        .returning();
+
+      if (!deletedPost) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Post not found',
+        });
+      }
+
+      // Emit event for real-time updates
+      postEvents.emit('deletePost', deletedPost);
+
+      return deletedPost;
+    }),
 });

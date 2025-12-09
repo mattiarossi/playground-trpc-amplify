@@ -1,13 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { trpc } from '@/lib/trpc/provider';
-import { useRouter } from 'next/navigation';
+import { useRouter, useParams } from 'next/navigation';
+import { useAuthenticator } from '@aws-amplify/ui-react';
 
-export default function NewPostPage() {
+export default function EditPostPage() {
   const router = useRouter();
+  const params = useParams();
+  const slug = params.slug as string;
+  const { user } = useAuthenticator((context) => [context.user]);
+
   const [title, setTitle] = useState('');
-  const [slug, setSlug] = useState('');
+  const [newSlug, setNewSlug] = useState('');
   const [content, setContent] = useState('');
   const [excerpt, setExcerpt] = useState('');
   const [published, setPublished] = useState(false);
@@ -16,28 +21,46 @@ export default function NewPostPage() {
   const [isCheckingSlug, setIsCheckingSlug] = useState(false);
   const [newTagName, setNewTagName] = useState('');
   const [showNewTagInput, setShowNewTagInput] = useState(false);
+  const [isInitialized, setIsInitialized] = useState(false);
+
+  // Fetch the post
+  const { data: post, isLoading: isLoadingPost, error: postError } = trpc.posts.bySlug.useQuery(
+    { slug },
+    { enabled: !!slug }
+  );
 
   // Fetch available tags
   const { data: tags, refetch: refetchTags } = trpc.tags.list.useQuery();
 
-  const createPost = trpc.posts.create.useMutation({
-    onSuccess: (data) => {
-      console.log('onSuccess called with data:', data);
-      if (data && data.slug) {
-        router.push(`/posts/${data.slug}`);
-      } else {
-        console.error('Data or slug is undefined:', data);
+  // Initialize form with post data
+  useEffect(() => {
+    if (post && !isInitialized) {
+      const postData = (post as any)?.data || post;
+      setTitle(postData.title || '');
+      setNewSlug(postData.slug || '');
+      setContent(postData.content || '');
+      setExcerpt(postData.excerpt || '');
+      setPublished(postData.published || false);
+      
+      // Set selected tags
+      if (postData.postsTags && postData.postsTags.length > 0) {
+        const tagIds = postData.postsTags.map((pt: any) => pt.tag.id);
+        setSelectedTags(tagIds);
       }
+      
+      setIsInitialized(true);
+    }
+  }, [post, isInitialized]);
+
+  const updatePost = trpc.posts.update.useMutation({
+    onSuccess: (data) => {
+      console.log('Post updated successfully:', data);
+      router.push(`/posts/${newSlug || slug}`);
     },
     onError: (error) => {
-      console.error('Create post error:', error);
-      // If slug conflict, suggest an alternative
+      console.error('Update post error:', error);
       if (error.message.includes('slug') && error.message.includes('already exists')) {
-        const timestamp = Date.now();
-        const suggestedSlug = `${slug}-${timestamp}`;
-        if (confirm(`The slug "${slug}" is already taken. Would you like to use "${suggestedSlug}" instead?`)) {
-          setSlug(suggestedSlug);
-        }
+        setSlugError('This slug is already taken. Please choose a different one.');
       }
     },
   });
@@ -57,27 +80,38 @@ export default function NewPostPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    createPost.mutate({
+    if (!post) return;
+
+    const postData = (post as any)?.data || post;
+
+    updatePost.mutate({
+      id: postData.id,
       title,
-      slug: slug || title.toLowerCase().replace(/\s+/g, '-'),
+      slug: newSlug,
       content,
       excerpt: excerpt || undefined,
       published,
-      tagIds: selectedTags.length > 0 ? selectedTags : undefined,
+      tagIds: selectedTags,
     });
   };
 
   const checkSlugQuery = trpc.posts.checkSlug.useQuery(
-    { slug },
+    { slug: newSlug },
     { 
-      enabled: slug.length > 0,
+      enabled: newSlug.length > 0 && newSlug !== slug,
       refetchOnWindowFocus: false,
     }
   );
 
   const validateSlug = async () => {
-    if (!slug || slug.trim().length === 0) {
+    if (!newSlug || newSlug.trim().length === 0) {
       setSlugError('Slug is required');
+      return;
+    }
+
+    // If slug hasn't changed, don't validate
+    if (newSlug === slug) {
+      setSlugError(null);
       return;
     }
 
@@ -103,7 +137,7 @@ export default function NewPostPage() {
       .replace(/\s+/g, '-')
       .replace(/-+/g, '-')
       .trim();
-    setSlug(generatedSlug);
+    setNewSlug(generatedSlug);
     setSlugError(null);
   };
 
@@ -120,10 +154,60 @@ export default function NewPostPage() {
     });
   };
 
+  // Check authorization
+  if (!user) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
+          <p className="text-yellow-800 mb-4">Please sign in to edit posts.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (postError) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <p className="text-red-800">Error loading post: {postError.message}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoadingPost || !isInitialized) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="bg-white rounded-lg shadow-sm p-8">
+          <div className="animate-pulse space-y-4">
+            <div className="h-8 bg-gray-200 rounded w-1/3"></div>
+            <div className="h-10 bg-gray-200 rounded"></div>
+            <div className="h-10 bg-gray-200 rounded"></div>
+            <div className="h-40 bg-gray-200 rounded"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const postData = (post as any)?.data || post;
+  const authorId = user?.userId || user?.username || '';
+
+  // Check if current user is the author
+  if (postData.authorId !== authorId) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
+          <p className="text-red-800">You don't have permission to edit this post.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <div className="bg-white rounded-lg shadow-sm p-8">
-        <h1 className="text-3xl font-bold text-gray-900 mb-6">Create New Post</h1>
+        <h1 className="text-3xl font-bold text-gray-900 mb-6">Edit Post</h1>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Title */}
@@ -136,7 +220,6 @@ export default function NewPostPage() {
               id="title"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              onBlur={generateSlug}
               className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
               placeholder="Enter post title..."
               required
@@ -155,9 +238,9 @@ export default function NewPostPage() {
               <input
                 type="text"
                 id="slug"
-                value={slug}
+                value={newSlug}
                 onChange={(e) => {
-                  setSlug(e.target.value);
+                  setNewSlug(e.target.value);
                   setSlugError(null);
                 }}
                 onBlur={validateSlug}
@@ -174,14 +257,19 @@ export default function NewPostPage() {
             {slugError && (
               <p className="mt-1 text-sm text-red-600">{slugError}</p>
             )}
-            {!slugError && !isCheckingSlug && slug && checkSlugQuery.data?.available && (
+            {!slugError && !isCheckingSlug && newSlug && newSlug !== slug && checkSlugQuery.data?.available && (
               <p className="mt-1 text-sm text-green-600">✓ This slug is available</p>
             )}
-            {!slugError && !isCheckingSlug && !slug && (
-              <p className="mt-1 text-sm text-gray-500">
-                Must be unique. Auto-generated from title when you leave the title field.
-              </p>
+            {newSlug === slug && (
+              <p className="mt-1 text-sm text-gray-500">Current slug (unchanged)</p>
             )}
+            <button
+              type="button"
+              onClick={generateSlug}
+              className="mt-2 text-sm text-blue-600 hover:text-blue-700 font-medium"
+            >
+              Generate from title
+            </button>
           </div>
 
           {/* Excerpt */}
@@ -302,14 +390,14 @@ export default function NewPostPage() {
               className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
             />
             <label htmlFor="published" className="ml-2 text-sm font-medium text-gray-700">
-              Publish immediately
+              Published
             </label>
           </div>
 
           {/* Error Message */}
-          {createPost.error && (
+          {updatePost.error && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <p className="text-red-800 text-sm">{createPost.error.message}</p>
+              <p className="text-red-800 text-sm">{updatePost.error.message}</p>
             </div>
           )}
 
@@ -324,10 +412,10 @@ export default function NewPostPage() {
             </button>
             <button
               type="submit"
-              disabled={createPost.isPending || !!slugError || isCheckingSlug || !slug}
+              disabled={updatePost.isPending || !!slugError || isCheckingSlug || !newSlug}
               className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {createPost.isPending ? 'Creating...' : 'Create Post'}
+              {updatePost.isPending ? 'Updating...' : 'Update Post'}
             </button>
           </div>
         </form>

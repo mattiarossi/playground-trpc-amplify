@@ -6,6 +6,9 @@ import { TRPCProvider } from "@/lib/trpc/provider";
 import { Authenticator } from '@aws-amplify/ui-react';
 import '@aws-amplify/ui-react/styles.css';
 import { Amplify } from 'aws-amplify';
+import Navbar from '@/components/Navbar';
+import Sidebar from '@/components/Sidebar';
+import { trpc } from '@/lib/trpc/provider';
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -15,6 +18,38 @@ try {
   Amplify.configure(outputs);
 } catch (e) {
   console.error('Failed to load amplify_outputs.json');
+}
+
+function LayoutContent({ 
+  children, 
+  signOut, 
+  userId, 
+  userEmail 
+}: { 
+  children: React.ReactNode; 
+  signOut: () => void; 
+  userId: string; 
+  userEmail?: string;
+}) {
+  // Fetch the user's display name from the database
+  const { data: userData } = trpc.users.byId.useQuery(
+    { id: userId },
+    { enabled: !!userId }
+  );
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <Navbar 
+        userEmail={userEmail}
+        userName={userData?.name}
+        onSignOut={signOut}
+      />
+      <div className="flex">
+        <Sidebar />
+        <main className="flex-1 p-6">{children}</main>
+      </div>
+    </div>
+  );
 }
 
 export default function RootLayout({
@@ -28,45 +63,13 @@ export default function RootLayout({
         <Authenticator>
           {({ signOut, user }) => (
             <TRPCProvider>
-              <div className="min-h-screen bg-gray-50">
-                <nav className="bg-white shadow-sm border-b">
-                  <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                    <div className="flex justify-between h-16">
-                      <div className="flex items-center">
-                        <a href="/" className="flex items-center">
-                          <h1 className="text-2xl font-bold text-gray-900">
-                            Blog Platform
-                          </h1>
-                        </a>
-                      </div>
-                      <div className="flex items-center space-x-4">
-                        <span className="text-sm text-gray-700">
-                          Welcome, {user?.signInDetails?.loginId}
-                        </span>
-                        <a
-                          href="/"
-                          className="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
-                        >
-                          Home
-                        </a>
-                        <a
-                          href="/posts/new"
-                          className="bg-blue-600 text-white hover:bg-blue-700 px-4 py-2 rounded-md text-sm font-medium"
-                        >
-                          New Post
-                        </a>
-                        <button
-                          onClick={signOut}
-                          className="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
-                        >
-                          Sign Out
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </nav>
-                <main>{children}</main>
-              </div>
+              <LayoutContent
+                signOut={signOut}
+                userId={user?.username || ''}
+                userEmail={user?.signInDetails?.loginId}
+              >
+                {children}
+              </LayoutContent>
             </TRPCProvider>
           )}
         </Authenticator>

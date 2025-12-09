@@ -48,15 +48,17 @@ A modern full-stack blog platform built with Next.js, tRPC, Drizzle ORM, Postgre
 
 ## Features
 
-- 📝 **Blog Posts**: Create, read, update, and delete blog posts
+- 📝 **Blog Posts**: Create, read, update, and delete blog posts with tag support
 - 💬 **Comments**: Nested comments with replies
-- 🏷️ **Tags**: Organize posts with tags
-- 👤 **User Profiles**: Author profiles with bios
+- 🏷️ **Tags**: Browse, create, and manage tags; organize posts with tags
+- 👤 **User Profiles**: View and edit user profiles with bios and avatars
+- 👥 **Admin Interface**: Cognito user management with group-based access control
 - 🔍 **Search**: Search posts by title and content
 - 📊 **View Counts**: Track post popularity
 - 🎨 **Modern UI**: Responsive design with Tailwind CSS
 - ⚡ **WebSocket Communication**: Persistent WebSocket connections via AppSync Events for efficient client-server communication
 - 🔒 **Type Safety**: Full TypeScript coverage from database to UI
+- 🔐 **Authentication**: AWS Cognito integration with role-based permissions
 
 ## Database Schema
 
@@ -164,23 +166,40 @@ Open [http://localhost:3000](http://localhost:3000) to see your blog platform.
 ```
 ├── amplify/
 │   ├── backend.ts              # Amplify backend configuration
+│   ├── auth/
+│   │   └── resource.ts         # Cognito authentication config
 │   └── events/
 │       ├── resource.ts         # Lambda function definition
-│       ├── events.ts           # Lambda handler with tRPC server
+│       ├── handler.ts          # Lambda handler with tRPC server
 │       ├── package.json        # Lambda dependencies
 │       └── tsconfig.json       # Lambda TypeScript config
 ├── src/
 │   ├── app/                    # Next.js app router pages
 │   │   ├── layout.tsx          # Root layout with navigation
 │   │   ├── page.tsx            # Home page (post list)
-│   │   └── posts/
-│   │       ├── [slug]/
-│   │       │   └── page.tsx    # Post detail page
-│   │       └── new/
-│   │           └── page.tsx    # Create post page
+│   │   ├── admin/
+│   │   │   └── page.tsx        # Admin user management
+│   │   ├── posts/
+│   │   │   ├── [slug]/
+│   │   │   │   └── page.tsx    # Post detail page
+│   │   │   └── new/
+│   │   │       └── page.tsx    # Create post page with tags
+│   │   ├── tags/
+│   │   │   ├── page.tsx        # Browse all tags
+│   │   │   ├── [slug]/
+│   │   │   │   └── page.tsx    # Tag detail with posts
+│   │   │   └── manage/
+│   │   │       └── page.tsx    # Tag management
+│   │   └── users/
+│   │       └── [id]/
+│   │           └── page.tsx    # User profile (view/edit)
 │   ├── components/
-│   │   └── CommentSection.tsx  # Comments component
+│   │   ├── AdminUserManagement.tsx  # Admin interface
+│   │   ├── CommentSection.tsx       # Comments component
+│   │   └── Navbar.tsx               # Navigation bar
 │   ├── lib/
+│   │   ├── hooks/
+│   │   │   └── useIsAdmin.ts   # Admin role check hook
 │   │   └── trpc/
 │   │       ├── provider.tsx    # tRPC React Query provider
 │   │       └── appsync-ws-link.ts  # WebSocket adapter
@@ -190,15 +209,18 @@ Open [http://localhost:3000](http://localhost:3000) to see your blog platform.
 │       │   ├── index.ts        # Database connection
 │       │   └── migrate.ts      # Migration runner
 │       └── trpc/
-│           ├── trpc.ts         # tRPC initialization
+│           ├── trpc.ts         # tRPC initialization & middleware
 │           └── routers/
 │               ├── index.ts    # Main router
+│               ├── admin.ts    # Admin procedures (Cognito)
 │               ├── posts.ts    # Posts procedures
 │               ├── comments.ts # Comments procedures
 │               ├── users.ts    # Users procedures
 │               └── tags.ts     # Tags procedures
 ├── drizzle.config.ts           # Drizzle Kit configuration
 ├── package.json                # Dependencies and scripts
+├── ADMIN_INTERFACE.md          # Admin feature documentation
+├── ADMIN_GROUP_SETUP.md        # Admin group setup guide
 └── tsconfig.json               # TypeScript configuration
 ```
 

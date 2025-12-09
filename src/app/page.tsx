@@ -99,16 +99,32 @@ export default function HomePage() {
 
                 <div className="flex items-center justify-between text-sm text-gray-500">
                   <div className="flex items-center space-x-4">
-                    <span className="flex items-center">
-                      <svg
-                        className="w-4 h-4 mr-1"
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
+                    {post.author?.name ? (
+                      <Link
+                        href={`/users/${post.author.name}`}
+                        className="flex items-center hover:text-blue-600"
                       >
-                        <path d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" />
-                      </svg>
-                      {post.author?.name || 'Unknown'}
-                    </span>
+                        <svg
+                          className="w-4 h-4 mr-1"
+                          fill="currentColor"
+                          viewBox="0 0 20 20"
+                        >
+                          <path d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" />
+                        </svg>
+                        {post.author.name}
+                      </Link>
+                    ) : (
+                      <span className="flex items-center">
+                        <svg
+                          className="w-4 h-4 mr-1"
+                          fill="currentColor"
+                          viewBox="0 0 20 20"
+                        >
+                          <path d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" />
+                        </svg>
+                        Unknown
+                      </span>
+                    )}
                     <span>
                       {formatDistanceToNow(new Date(post.createdAt), {
                         addSuffix: true,
@@ -134,12 +150,13 @@ export default function HomePage() {
                   {post.postsTags && post.postsTags.length > 0 && (
                     <div className="flex gap-2">
                       {post.postsTags.map((pt: any) => (
-                        <span
+                        <Link
                           key={pt.tag.id}
-                          className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs"
+                          href={`/tags/${pt.tag.slug}`}
+                          className="bg-blue-100 text-blue-800 hover:bg-blue-200 px-2 py-1 rounded text-xs transition-colors"
                         >
-                          {pt.tag.name}
-                        </span>
+                          #{pt.tag.name}
+                        </Link>
                       ))}
                     </div>
                   )}

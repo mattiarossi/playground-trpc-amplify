@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createTRPCRouter, publicProcedure } from '../trpc';
+import { createTRPCRouter, publicProcedure, protectedProcedure, adminProcedure } from '../trpc';
 import { tags, postsTags } from '../../db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
@@ -58,8 +58,8 @@ export const tagsRouter = createTRPCRouter({
       return tag;
     }),
 
-  // Create tag
-  create: publicProcedure
+  // Create tag (authenticated users)
+  create: protectedProcedure
     .input(
       z.object({
         name: z.string().min(1).max(100),
@@ -71,8 +71,8 @@ export const tagsRouter = createTRPCRouter({
       return newTag;
     }),
 
-  // Delete tag
-  delete: publicProcedure
+  // Delete tag (admin only)
+  delete: adminProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       const [deletedTag] = await ctx.db

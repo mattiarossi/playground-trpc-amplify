@@ -5,9 +5,48 @@ import { eq } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 
 export const usersRouter = createTRPCRouter({
-  // Get user by ID
+  // Get user by name (username)
+  byName: publicProcedure
+    .input(z.object({ name: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const user = await ctx.db.query.users.findFirst({
+        where: eq(users.name, input.name),
+        columns: {
+          id: true,
+          name: true,
+          email: true,
+          bio: true,
+          avatarUrl: true,
+          createdAt: true,
+        },
+        with: {
+          posts: {
+            columns: {
+              id: true,
+              title: true,
+              slug: true,
+              excerpt: true,
+              published: true,
+              createdAt: true,
+            },
+            limit: 10,
+          },
+        },
+      });
+
+      if (!user) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'User not found',
+        });
+      }
+
+      return user;
+    }),
+
+  // Get user by ID (internal use, kept for compatibility)
   byId: publicProcedure
-    .input(z.object({ id: z.number() }))
+    .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
       const user = await ctx.db.query.users.findFirst({
         where: eq(users.id, input.id),
@@ -66,6 +105,7 @@ export const usersRouter = createTRPCRouter({
   create: publicProcedure
     .input(
       z.object({
+        id: z.string(), // Cognito sub or unique identifier
         email: z.string().email(),
         name: z.string().min(1),
         bio: z.string().optional(),
@@ -77,31 +117,70 @@ export const usersRouter = createTRPCRouter({
       return newUser;
     }),
 
-  // Update user
+  // Update user (by name or id)
   update: publicProcedure
     .input(
       z.object({
-        id: z.number(),
-        name: z.string().min(1).optional(),
+        name: z.string().optional(),
+        id: z.string().optional(),
         bio: z.string().optional(),
         avatarUrl: z.string().url().optional(),
+        newName: z.string().min(1).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { id, ...updateData } = input;
+      const { name, id, newName, ...updateData } = input;
 
-      const [updatedUser] = await ctx.db
-        .update(users)
-        .set({ ...updateData, updatedAt: new Date() })
-        .where(eq(users.id, id))
-        .returning();
+      if (!name && !id) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Either name or id must be provided',
+        });
+      }
 
-      if (!updatedUser) {
+      // Check authentication
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'You must be logged in to update a profile',
+        });
+      }
+
+      // Get the user being updated to check permissions
+      const targetUser = await ctx.db.query.users.findFirst({
+        where: name ? eq(users.name, name) : eq(users.id, id!),
+      });
+
+      if (!targetUser) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'User not found',
         });
       }
+
+      // Check authorization: user must be editing their own profile OR be an admin
+      const isOwnProfile = ctx.user.sub === targetUser.id;
+      const isAdmin = ctx.user.groups?.includes('admin');
+
+      if (!isOwnProfile && !isAdmin) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You do not have permission to edit this profile',
+        });
+      }
+
+      // Build the update data
+      const updates: any = { ...updateData, updatedAt: new Date() };
+      if (newName) {
+        updates.name = newName;
+      }
+
+      // Update by name or id
+      const [updatedUser] = await ctx.db
+        .update(users)
+        .set(updates)
+        .where(name ? eq(users.name, name) : eq(users.id, id!))
+        .returning();
 
       return updatedUser;
     }),
