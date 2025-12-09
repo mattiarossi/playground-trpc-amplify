@@ -33,6 +33,14 @@ export const lambdaPGStatement1 = new iam.PolicyStatement({
     'ec2:CreateNetworkInterface',
     'ec2:DescribeNetworkInterfaces',
     'ec2:DeleteNetworkInterface',
+    'cognito-idp:AdminCreateUser',
+    'cognito-idp:AdminDeleteUser',
+    'cognito-idp:AdminSetUserSettings',
+    'cognito-idp:ListUsers',
+    'cognito-idp:AdminSetUserMFAPreference',
+    'cognito-idp:AdminResetUserPassword',
+    'cognito-idp:AdminGetUser',
+
     'events:PutEvents'
   ],
   resources: ['*'],
@@ -44,6 +52,10 @@ const eventsApi = new Events(backend.stack, 'BlogTRPCEvents', {
   userPool: backend.auth.resources.userPool,
   name: 'blog-trpc-events-api',
 });
+
+// Add environment variables to Lambda
+backend.eventsHandler.addEnvironment('APPSYNC_API_ID', eventsApi.apiId);
+backend.eventsHandler.addEnvironment('CHANNEL_NAMESPACE', 'default');
 
 // Add Lambda data source for tRPC handler
 const dsEventsHandler = eventsApi.api.addLambdaDataSource(
@@ -100,8 +112,8 @@ backend.auth.resources.authenticatedUserIamRole.attachInlinePolicy(
   })
 );
 const vpcConfig = {
-  SecurityGroupIds: ['sg-01ee46a3eee8bed51'],
-  SubnetIds: ['subnet-07fd5e0e65eee2d04'],
+  SecurityGroupIds: ['sg-01be46a33248bed51'],
+  SubnetIds: ['subnet-07fd5a0e65be82d04'],
 };
 backend.eventsHandler.resources.cfnResources.cfnFunction.addPropertyOverride(
   'VpcConfig',
@@ -136,7 +148,7 @@ for (const resource of backend.eventsHandler.stack.node.findAll()) {
         lambdaFunction.stack,
         `trpcLambdaManagedPolicy-${envName}`,
         {
-          statements: [lambdaPGStatement3],
+          statements: [lambdaPGStatement3,lambdaPGStatement1],
         },
       );
       //lambdaFunction;

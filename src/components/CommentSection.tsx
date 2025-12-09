@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { trpc } from '@/lib/trpc/provider';
 import { formatDistanceToNow } from 'date-fns';
+import { getAvatarUrl } from '@/lib/utils/avatar';
 
 interface CommentSectionProps {
   postId: number;
@@ -113,7 +114,7 @@ export function CommentSection({ postId }: CommentSectionProps) {
               {/* Comment */}
               <div className="flex items-start space-x-3">
                 <img
-                  src={comment.author.avatarUrl || `https://ui-avatars.com/api/?name=${comment.author.name}`}
+                  src={comment.author.avatarUrl || getAvatarUrl(comment.author.name)}
                   alt={comment.author.name}
                   className="w-10 h-10 rounded-full"
                 />
@@ -148,7 +149,7 @@ export function CommentSection({ postId }: CommentSectionProps) {
                     return (
                       <div key={reply.id} className="flex items-start space-x-3">
                         <img
-                          src={reply.author.avatarUrl || `https://ui-avatars.com/api/?name=${reply.author.name}`}
+                          src={reply.author.avatarUrl || getAvatarUrl(reply.author.name)}
                           alt={reply.author.name}
                           className="w-8 h-8 rounded-full"
                         />

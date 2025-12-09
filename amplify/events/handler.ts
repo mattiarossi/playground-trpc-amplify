@@ -17,9 +17,10 @@ import {
   type ChunkedMessage,
 } from './chunking-utils';
 
+
 // Initialize Logger
 const logger = new Logger({ serviceName: 'appsync-events-handler' });
-//
+
 // Initialize PostgreSQL chunk store
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
@@ -299,13 +300,15 @@ async function processTRPCRequest(message: any, lambdaEvent: AppSyncEventsPublis
     });
 
     // Create tRPC context with user info from identity
+    const identity = lambdaEvent.identity as any;
     const ctx = await createTRPCContext({
       headers: new Headers(lambdaEvent.request.headers || {}),
-      user: lambdaEvent.identity
+      user: identity
         ? {
-            sub: (lambdaEvent.identity as any).sub,
-            username: (lambdaEvent.identity as any).username,
-            email: (lambdaEvent.identity as any).claims?.email,
+            sub: identity.sub,
+            username: identity.username,
+            email: identity.claims?.email,
+            groups: identity.claims?.['cognito:groups'] || [],
           }
         : undefined,
     });
@@ -316,6 +319,7 @@ async function processTRPCRequest(message: any, lambdaEvent: AppSyncEventsPublis
       userSub: ctx.user?.sub,
       username: ctx.user?.username,
       email: ctx.user?.email,
+      groups: ctx.user?.groups,
     });
 
     // Create a caller for the router

@@ -10,6 +10,7 @@ export interface User {
   sub: string;
   username: string;
   email?: string;
+  groups?: string[];
 }
 
 /**
@@ -53,14 +54,48 @@ export const publicProcedure = t.procedure;
 export const createCallerFactory = t.createCallerFactory;
 
 /**
- * Middleware example - could be used for auth
+ * Protected procedure - requires authentication
  */
 export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
-  // Add authentication logic here if needed
-  // For now, this is a placeholder
+  if (!ctx.user) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'Authentication required',
+    });
+  }
+
   return next({
     ctx: {
       ...ctx,
+      user: ctx.user, // Type refinement - user is guaranteed to exist
+    },
+  });
+});
+
+/**
+ * Admin-only procedure
+ * Requires user to be authenticated and member of 'admin' group
+ */
+export const adminProcedure = t.procedure.use(async ({ ctx, next }) => {
+  if (!ctx.user) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'Authentication required',
+    });
+  }
+
+  const isAdmin = ctx.user.groups?.includes('admin');
+  if (!isAdmin) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Admin access required',
+    });
+  }
+
+  return next({
+    ctx: {
+      ...ctx,
+      user: ctx.user, // Type refinement - user is guaranteed to exist
     },
   });
 });

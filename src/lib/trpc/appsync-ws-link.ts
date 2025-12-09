@@ -207,7 +207,15 @@ export class AppSyncWebSocketLink {
                   messageId: eventData.messageId,
                   totalChunks: eventData.totalChunks,
                   hasFirstChunk: !!eventData.firstChunk,
+                  requestId: eventData.requestId,
                 });
+                
+                // Only process if we have a pending request for this response
+                // (chunked responses are broadcast, so other clients may see them)
+                if (!this.pendingRequests.has(eventData.requestId)) {
+                  console.log('Ignoring chunked response for unknown request:', eventData.requestId);
+                  return;
+                }
                 
                 // Start fetching chunks (if first chunk provided, process it first)
                 this.startFetchingChunks(
@@ -358,12 +366,19 @@ export class AppSyncWebSocketLink {
     requestId: string,
     firstChunk?: ChunkedMessage
   ): void {
-    // Get the pending request
+    // Get the pending request (should always exist since we check before calling)
     const pendingRequest = this.pendingRequests.get(requestId);
     if (!pendingRequest) {
-      console.error('No pending request found for chunked response:', requestId);
+      console.error('Unexpected: No pending request found in startFetchingChunks:', requestId);
       return;
     }
+    
+    console.log('Starting chunk fetch for request:', {
+      requestId,
+      messageId,
+      totalChunks,
+      hasFirstChunk: !!firstChunk,
+    });
     
     // Create a chunk fetch request
     const timeout = setTimeout(() => {
