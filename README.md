@@ -93,21 +93,30 @@ A modern full-stack blog platform built with Next.js, tRPC, Drizzle ORM, Postgre
 npm install
 ```
 
-### 2. Set Up Database
+### 2. Set Up Environment Variables
 
-Create a PostgreSQL database and update your `.env` file:
+Copy the example environment file and configure it:
 
 ```bash
-cp .env.example .env
+cp .env.local.example .env.local
 ```
 
-Edit `.env` and add your database connection string:
+Edit `.env.local` with your configuration:
 
 ```env
+# Required: Database connection for local development
 DATABASE_URL=postgresql://username:password@localhost:5432/blog_db
+
+# Optional: Amplify backend configuration (see .env.local.example for more options)
+# AMPLIFY_VPC_CONFIG='{"SecurityGroupIds":["sg-xxx"],"SubnetIds":["subnet-yyy"]}'
+# AMPLIFY_DATABASE_URL=postgresql://user:pass@rds-host:5432/prod_db
 ```
 
-### 3. Generate and Run Database Migrations
+See `.env.local.example` for a complete list of available configuration options.
+
+### 3. Set Up Database
+
+Create a PostgreSQL database locally or use a hosted service. Then run migrations:
 
 ```bash
 # Generate migration files from schema
@@ -131,6 +140,57 @@ npm run db:studio
 ```
 
 ### 5. Deploy Amplify Backend
+
+#### Configuration Options
+
+The backend supports flexible configuration for VPC and database connection through multiple sources (in order of priority):
+
+**VPC Configuration:**
+1. `process.env.secrets` - Amplify CI automatically loads from SSM parameters at `/amplify/{app-id}/{branch}/`
+2. `process.env.AMPLIFY_VPC_CONFIG` - Custom environment variable (JSON string)
+3. Empty arrays (default - no VPC)
+
+**Database URL:**
+1. `process.env.secrets` - Amplify CI automatically loads from SSM parameters
+2. `process.env.AMPLIFY_DATABASE_URL` - Custom environment variable
+3. Empty string (default)
+
+Example VPC configuration format:
+```json
+{
+  "SecurityGroupIds": ["sg-01be46a33248bed51"],
+  "SubnetIds": ["subnet-07fd5a0e65be82d04"]
+}
+```
+
+#### Setting Up SSM Parameters (Recommended for CI/CD)
+
+Store secrets in AWS Systems Manager Parameter Store for automatic loading by Amplify CI:
+
+```bash
+# VPC Configuration
+aws ssm put-parameter \
+  --name "/amplify/{app-id}/{branch}/vpcConfig" \
+  --type "String" \
+  --value '{"SecurityGroupIds":["sg-xxx"],"SubnetIds":["subnet-yyy"]}'
+
+# Database URL
+aws ssm put-parameter \
+  --name "/amplify/{app-id}/{branch}/databaseUrl" \
+  --type "SecureString" \
+  --value "postgresql://username:password@host:5432/dbname"
+```
+
+#### Setting Environment Variables (Alternative)
+
+For local development or custom deployments, set environment variables:
+
+```bash
+export AMPLIFY_VPC_CONFIG='{"SecurityGroupIds":["sg-xxx"],"SubnetIds":["subnet-yyy"]}'
+export AMPLIFY_DATABASE_URL="postgresql://username:password@host:5432/dbname"
+```
+
+#### Deploy Commands
 
 ```bash
 # Start Amplify sandbox (for development)
@@ -305,9 +365,16 @@ npm run amplify:deploy
 ```
 
 Make sure to:
-1. Set `DATABASE_URL` environment variable in Lambda
-2. Ensure `amplify_outputs.json` is generated with correct AppSync Events endpoint
-3. Configure any additional environment variables as needed
+1. Configure VPC settings (if Lambda needs to access private resources like RDS)
+   - Option A: Store in SSM Parameter Store at `/amplify/{app-id}/{branch}/vpcConfig`
+   - Option B: Set `AMPLIFY_VPC_CONFIG` environment variable
+2. Configure database connection
+   - Option A: Store in SSM Parameter Store at `/amplify/{app-id}/{branch}/databaseUrl` (recommended for security)
+   - Option B: Set `AMPLIFY_DATABASE_URL` environment variable
+3. Ensure `amplify_outputs.json` is generated with correct AppSync Events endpoint
+4. Configure any additional environment variables as needed
+
+**Note:** When using SSM parameters, Amplify CI automatically loads them into the `secrets` environment variable during build time. The backend code will parse and apply these configurations automatically.
 
 ## Future Enhancements
 
@@ -333,9 +400,18 @@ Make sure to:
 
 ### Database Connection Issues
 
-- Verify `DATABASE_URL` format
+- Verify `DATABASE_URL` format (or `AMPLIFY_DATABASE_URL`)
 - Check PostgreSQL is running and accessible
 - Ensure security groups allow Lambda to access RDS
+- For VPC-configured Lambdas, verify VPC configuration includes correct security groups and subnets
+- Check CloudWatch logs for connection errors
+
+### Configuration Issues
+
+- If VPC config is not applied, verify the JSON format matches the expected structure
+- Check build logs for configuration source messages (secrets, environment variables, or defaults)
+- Ensure SSM parameters are at the correct path: `/amplify/{app-id}/{branch}/vpcConfig` or `/amplify/{app-id}/{branch}/databaseUrl`
+- For SSM parameters, verify IAM permissions allow Amplify to read them
 
 ### Type Errors
 
